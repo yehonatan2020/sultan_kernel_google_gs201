@@ -41,6 +41,8 @@
 #endif /* MODULE && CONFIG_INTEGRATE_MODULES */
 #endif
 
+#define __read_only __ro_after_init
+
 #ifndef ____cacheline_aligned
 #define ____cacheline_aligned __attribute__((__aligned__(SMP_CACHE_BYTES)))
 #endif
