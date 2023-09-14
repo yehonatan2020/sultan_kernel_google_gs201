@@ -359,12 +359,8 @@ void rvh_select_task_rq_rt_pixel_mod(void *data, struct task_struct *p, int prev
 	struct cpumask backup_mask;
 	int i;
 
-<<<<<<< HEAD
 	if (sd_flag == SD_BALANCE_EXEC) {
 		*new_cpu = prev_cpu;
-=======
-	if (sd_flag != SD_BALANCE_WAKE && sd_flag != SD_BALANCE_FORK)
->>>>>>> 245a3274e1e6 (vh: sched: Don't select the previous CPU if it isn't allowed)
 		goto out;
 	}
 
