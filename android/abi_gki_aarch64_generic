@@ -828,6 +828,8 @@
   dw_pcie_read
   dw_pcie_setup_rc
   dw_pcie_write
+  __dynamic_dev_dbg
+  __dynamic_pr_debug
   em_cpu_get
   emergency_restart
   enable_irq
@@ -858,8 +860,6 @@
   filp_open_block
   find_extend_vma
   find_get_pid
-  find_first_bit
-  find_first_zero_bit
   find_last_bit
   find_next_bit
   find_next_zero_bit

@@ -164,6 +164,7 @@ struct bcm_spi_priv {
 
 	/* IRQ and its control */
 	atomic_t irq_enabled;
+	raw_spinlock_t irq_lock;
 
 	/* Work */
 	struct work_struct rxtx_work;

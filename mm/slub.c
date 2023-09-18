@@ -483,13 +483,13 @@ static inline void *restore_red_left(struct kmem_cache *s, void *p)
  * Debug settings:
  */
 #if defined(CONFIG_SLUB_DEBUG_ON)
-slab_flags_t slub_debug __ro_after_init = DEBUG_DEFAULT_FLAGS;
+slab_flags_t slub_debug = DEBUG_DEFAULT_FLAGS;
 #else
-slab_flags_t slub_debug __ro_after_init;
+slab_flags_t slub_debug;
 #endif
 
-static char *slub_debug_string __ro_after_init;
-static int disable_higher_order_debug __ro_after_init;
+static char *slub_debug_string;
+static int disable_higher_order_debug;
 
 /*
  * slub is about to manipulate internal object metadata.  This memory lies
@@ -3504,9 +3504,9 @@ EXPORT_SYMBOL(kmem_cache_alloc_bulk);
  * and increases the number of allocations possible without having to
  * take the list_lock.
  */
-static unsigned int slub_min_order __ro_after_init;
-static unsigned int slub_max_order __ro_after_init = PAGE_ALLOC_COSTLY_ORDER;
-static unsigned int slub_min_objects __ro_after_init;
+static unsigned int slub_min_order;
+static unsigned int slub_max_order = PAGE_ALLOC_COSTLY_ORDER;
+static unsigned int slub_min_objects;
 
 /*
  * Calculate the order of allocation given an slab object size.
@@ -4230,11 +4230,7 @@ size_t __ksize(const void *object)
 	page = virt_to_head_page(object);
 
 	if (unlikely(!PageSlab(page))) {
-#ifdef CONFIG_BUG_ON_DATA_CORRUPTION
-		BUG_ON(!PageCompound(page));
-#else
 		WARN_ON(!PageCompound(page));
-#endif
 		return page_size(page);
 	}
 
@@ -4964,7 +4960,7 @@ enum slab_stat_type {
 #define SO_TOTAL	(1 << SL_TOTAL)
 
 #ifdef CONFIG_MEMCG
-static bool memcg_sysfs_enabled __ro_after_init = IS_ENABLED(CONFIG_SLUB_MEMCG_SYSFS_ON);
+static bool memcg_sysfs_enabled = IS_ENABLED(CONFIG_SLUB_MEMCG_SYSFS_ON);
 
 static int __init setup_slub_memcg_sysfs(char *str)
 {

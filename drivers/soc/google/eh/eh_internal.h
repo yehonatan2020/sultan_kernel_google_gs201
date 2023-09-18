@@ -10,7 +10,6 @@
 
 #include <linux/eh.h>
 #include "eh_regs.h"
-#include <linux/semaphore.h>
 #include <linux/spinlock_types.h>
 #include <linux/wait.h>
 #include <linux/kobject.h>
@@ -69,6 +68,10 @@ struct eh_device {
 #endif
 	/* Array of pre-allocated bounce buffers for decompression */
 	unsigned long __percpu *bounce_buffer;
+	struct completion __percpu *decomp_done;
+	struct swait_queue_head cirq_wq;
+	bool sync_comp_irq;
+	int comp_irq;
 
 	/* parent device */
 	struct device *dev;
@@ -102,12 +105,5 @@ struct eh_device {
 
 	/* keep pending request */
 	struct eh_sw_fifo sw_fifo;
-
-	/*
-	 * Decompression semaphore and slots to allow any CPU to freely access
-	 * any available decompression command set.
-	 */
-	struct semaphore decompr_sem;
-	atomic_t decompr_slots;
 };
 #endif

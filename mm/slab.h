@@ -475,13 +475,9 @@ static inline struct kmem_cache *virt_to_cache(const void *obj)
 	struct page *page;
 
 	page = virt_to_head_page(obj);
-#ifdef CONFIG_BUG_ON_DATA_CORRUPTION
-	BUG_ON(!PageSlab(page));
-#else
 	if (WARN_ONCE(!PageSlab(page), "%s: Object is not a Slab page!\n",
 					__func__))
 		return NULL;
-#endif
 	return page->slab_cache;
 }
 
@@ -511,14 +507,10 @@ static inline struct kmem_cache *cache_from_obj(struct kmem_cache *s, void *x)
 		return s;
 
 	cachep = virt_to_cache(x);
-#ifdef CONFIG_BUG_ON_DATA_CORRUPTION
-	BUG_ON(cachep && cachep != s);
-#else
 	if (WARN(cachep && cachep != s,
 		  "%s: Wrong slab cache. %s but object is from %s\n",
 		  __func__, s->name, cachep->name))
 		print_tracking(cachep, x);
-#endif
 	return cachep;
 }
 
