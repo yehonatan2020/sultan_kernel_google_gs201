@@ -406,13 +406,17 @@ EXPORT_SYMBOL_GPL(tick_broadcast_oneshot_control);
 /*
  * Transfer the do_timer job away from a dying cpu.
  *
- * Called with interrupts disabled. No locking required. If
+ * Called with interrupts disabled. Not locking required. If
  * tick_do_timer_cpu is owned by this cpu, nothing can change it.
  */
 void tick_handover_do_timer(void)
 {
-	if (tick_do_timer_cpu == smp_processor_id())
-		tick_do_timer_cpu = cpumask_first(cpu_online_mask);
+	if (tick_do_timer_cpu == smp_processor_id()) {
+		int cpu = cpumask_first(cpu_online_mask);
+
+		tick_do_timer_cpu = (cpu < nr_cpu_ids) ? cpu :
+			TICK_DO_TIMER_NONE;
+	}
 }
 
 /*
@@ -474,13 +478,6 @@ void tick_resume_local(void)
 		else
 			tick_resume_oneshot();
 	}
-
-	/*
-	 * Ensure that hrtimers are up to date and the clockevents device
-	 * is reprogrammed correctly when high resolution timers are
-	 * enabled.
-	 */
-	hrtimers_resume_local();
 }
 
 /**

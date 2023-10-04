@@ -43,20 +43,13 @@ struct trusty_state {
 	struct workqueue_struct *nop_wq;
 	struct trusty_work __percpu *nop_works;
 	struct list_head nop_queue;
-	raw_spinlock_t nop_lock; /* protects nop_queue */
+	spinlock_t nop_lock; /* protects nop_queue */
 	struct device_dma_parameters dma_parms;
 	void *ffa_tx;
 	void *ffa_rx;
 	u16 ffa_local_id;
 	u16 ffa_remote_id;
 	struct mutex share_memory_msg_lock; /* protects share_memory_msg */
-};
-
-struct trusty_smc_llock {
-	local_lock_t l;
-};
-static DEFINE_PER_CPU(struct trusty_smc_llock, smc_llock) = {
-	.l = INIT_LOCAL_LOCK(l)
 };
 
 static inline unsigned long smc(unsigned long r0, unsigned long r1,
@@ -132,7 +125,7 @@ static unsigned long trusty_std_call_helper(struct device *dev,
 	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
 
 	while (true) {
-		local_lock(&smc_llock.l);
+		local_irq_disable();
 		atomic_notifier_call_chain(&s->notifier, TRUSTY_CALL_PREPARE,
 					   NULL);
 		ret = trusty_std_call_inner(dev, smcnr, a0, a1, a2);
@@ -153,7 +146,7 @@ static unsigned long trusty_std_call_helper(struct device *dev,
 			 */
 			trusty_enqueue_nop(dev, NULL);
 		}
-		local_unlock(&smc_llock.l);
+		local_irq_enable();
 
 		if ((int)ret != SM_ERR_BUSY)
 			break;
@@ -724,7 +717,7 @@ static bool dequeue_nop(struct trusty_state *s, u32 *args)
 	unsigned long flags;
 	struct trusty_nop *nop = NULL;
 
-	raw_spin_lock_irqsave(&s->nop_lock, flags);
+	spin_lock_irqsave(&s->nop_lock, flags);
 	if (!list_empty(&s->nop_queue)) {
 		nop = list_first_entry(&s->nop_queue,
 				       struct trusty_nop, node);
@@ -737,7 +730,7 @@ static bool dequeue_nop(struct trusty_state *s, u32 *args)
 		args[1] = 0;
 		args[2] = 0;
 	}
-	raw_spin_unlock_irqrestore(&s->nop_lock, flags);
+	spin_unlock_irqrestore(&s->nop_lock, flags);
 	return nop;
 }
 
@@ -825,10 +818,10 @@ void trusty_enqueue_nop(struct device *dev, struct trusty_nop *nop)
 	if (nop) {
 		WARN_ON(s->api_version < TRUSTY_API_VERSION_SMP_NOP);
 
-		raw_spin_lock_irqsave(&s->nop_lock, flags);
+		spin_lock_irqsave(&s->nop_lock, flags);
 		if (list_empty(&nop->node))
 			list_add_tail(&nop->node, &s->nop_queue);
-		raw_spin_unlock_irqrestore(&s->nop_lock, flags);
+		spin_unlock_irqrestore(&s->nop_lock, flags);
 	}
 	queue_work(s->nop_wq, &tw->work);
 	preempt_enable();
@@ -843,10 +836,10 @@ void trusty_dequeue_nop(struct device *dev, struct trusty_nop *nop)
 	if (WARN_ON(!nop))
 		return;
 
-	raw_spin_lock_irqsave(&s->nop_lock, flags);
+	spin_lock_irqsave(&s->nop_lock, flags);
 	if (!list_empty(&nop->node))
 		list_del_init(&nop->node);
-	raw_spin_unlock_irqrestore(&s->nop_lock, flags);
+	spin_unlock_irqrestore(&s->nop_lock, flags);
 }
 EXPORT_SYMBOL(trusty_dequeue_nop);
 
@@ -870,7 +863,7 @@ static int trusty_probe(struct platform_device *pdev)
 	}
 
 	s->dev = &pdev->dev;
-	raw_spin_lock_init(&s->nop_lock);
+	spin_lock_init(&s->nop_lock);
 	INIT_LIST_HEAD(&s->nop_queue);
 	mutex_init(&s->smc_lock);
 	mutex_init(&s->share_memory_msg_lock);

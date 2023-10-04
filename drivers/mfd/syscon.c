@@ -40,9 +40,7 @@ static const struct regmap_config syscon_regmap_config = {
 	.reg_stride = 4,
 };
 
-static struct syscon *of_syscon_register(struct device_node *np, bool check_clk,
-					 regmap_lock lock, regmap_unlock unlock,
-					 void *lock_arg)
+static struct syscon *of_syscon_register(struct device_node *np, bool check_clk)
 {
 	struct clk *clk;
 	struct syscon *syscon;
@@ -103,9 +101,6 @@ static struct syscon *of_syscon_register(struct device_node *np, bool check_clk,
 		}
 	}
 
-	syscon_config.lock = lock;
-	syscon_config.unlock = unlock;
-	syscon_config.lock_arg = lock_arg;
 	syscon_config.name = kasprintf(GFP_KERNEL, "%pOFn@%llx", np,
 				       (u64)res.start);
 	syscon_config.reg_stride = reg_io_width;
@@ -156,9 +151,7 @@ err_map:
 }
 
 static struct regmap *device_node_get_regmap(struct device_node *np,
-					     bool check_clk, regmap_lock lock,
-					     regmap_unlock unlock,
-					     void *lock_arg)
+					     bool check_clk)
 {
 	struct syscon *entry, *syscon = NULL;
 
@@ -173,8 +166,7 @@ static struct regmap *device_node_get_regmap(struct device_node *np,
 	spin_unlock(&syscon_list_slock);
 
 	if (!syscon)
-		syscon = of_syscon_register(np, check_clk, lock, unlock,
-					    lock_arg);
+		syscon = of_syscon_register(np, check_clk);
 
 	if (IS_ERR(syscon))
 		return ERR_CAST(syscon);
@@ -184,22 +176,16 @@ static struct regmap *device_node_get_regmap(struct device_node *np,
 
 struct regmap *device_node_to_regmap(struct device_node *np)
 {
-	return device_node_get_regmap(np, false, NULL, NULL, NULL);
+	return device_node_get_regmap(np, false);
 }
 EXPORT_SYMBOL_GPL(device_node_to_regmap);
 
-struct regmap *__syscon_node_to_regmap(struct device_node *np, regmap_lock lock,
-				       regmap_unlock unlock, void *lock_arg)
+struct regmap *syscon_node_to_regmap(struct device_node *np)
 {
 	if (!of_device_is_compatible(np, "syscon"))
 		return ERR_PTR(-EINVAL);
 
-	return device_node_get_regmap(np, true, lock, unlock, lock_arg);
-}
-
-struct regmap *syscon_node_to_regmap(struct device_node *np)
-{
-	return __syscon_node_to_regmap(np, NULL, NULL, NULL);
+	return device_node_get_regmap(np, true);
 }
 EXPORT_SYMBOL_GPL(syscon_node_to_regmap);
 

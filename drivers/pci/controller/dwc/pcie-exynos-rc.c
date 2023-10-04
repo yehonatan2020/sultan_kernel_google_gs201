@@ -1273,9 +1273,9 @@ static int exynos_pcie_rc_rd_own_conf(struct pcie_port *pp, int where, int size,
 		return PCIBIOS_DEVICE_NOT_FOUND;
 	}
 
-	raw_spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
+	spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 	ret = dw_pcie_read(exynos_pcie->rc_dbi_base + (where), size, val);
-	raw_spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
+	spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
 
 	return ret;
 }
@@ -1290,13 +1290,13 @@ static int exynos_pcie_rc_wr_own_conf(struct pcie_port *pp, int where, int size,
 	if (exynos_pcie->phy_control == PCIE_PHY_ISOLATION)
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
-	raw_spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
+	spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 	/* If secure ATU then make SMC call, since only TFA has write access */
 	if (exynos_pcie->use_secure_atu && where == SECURE_ATU_ENABLE)
 		ret = exynos_smc(SMC_SECURE_ATU_SETUP, 0, 0, 0);
 	else
 		ret = dw_pcie_write(exynos_pcie->rc_dbi_base + (where), size, val);
-	raw_spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
+	spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
 
 	return ret;
 }
@@ -1450,7 +1450,20 @@ EXPORT_SYMBOL_GPL(exynos_pcie_rc_set_outbound_atu);
 static int exynos_pcie_rc_rd_other_conf(struct pcie_port *pp, struct pci_bus *bus, u32 devfn,
 					int where, int size, u32 *val)
 {
-	return dw_pcie_read(pp->va_cfg0_base + where, size, val);
+	u32 busdev, cfg_size;
+	u64 cpu_addr;
+	void __iomem *va_cfg_base;
+
+	busdev = EXYNOS_PCIE_ATU_BUS(bus->number) | EXYNOS_PCIE_ATU_DEV(PCI_SLOT(devfn)) |
+		 EXYNOS_PCIE_ATU_FUNC(PCI_FUNC(devfn));
+
+	cpu_addr = pp->cfg0_base;
+	cfg_size = pp->cfg0_size;
+	va_cfg_base = pp->va_cfg0_base;
+	/* setup ATU for cfg/mem outbound */
+	exynos_pcie_rc_prog_viewport_cfg0(pp, busdev);
+
+	return dw_pcie_read(va_cfg_base + where, size, val);
 }
 
 static int exynos_pcie_rc_wr_other_conf(struct pcie_port *pp, struct pci_bus *bus, u32 devfn,
@@ -3200,9 +3213,9 @@ int exynos_pcie_rc_poweron(int ch_num)
 		 * writel(0x0C, exynos_pcie->phy_pcs_base + 0x0180);
 		 */
 
-		raw_spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
+		spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 		exynos_pcie->state = STATE_LINK_UP_TRY;
-		raw_spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
+		spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
 
 		exynos_pcie->sudden_linkdown = 0;
 		exynos_pcie->cpl_timeout_recovery = 0;
@@ -3225,9 +3238,9 @@ int exynos_pcie_rc_poweron(int ch_num)
 		val |= HISTORY_BUFFER_ENABLE;
 		exynos_elbi_write(exynos_pcie, val, PCIE_STATE_HISTORY_CHECK);
 
-		raw_spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
+		spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 		exynos_pcie->state = STATE_LINK_UP;
-		raw_spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
+		spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
 
 		power_stats_update_up(exynos_pcie);
 
@@ -3343,9 +3356,9 @@ void exynos_pcie_rc_poweroff(int ch_num)
 
 	if (exynos_pcie->state == STATE_LINK_UP ||
 	    exynos_pcie->state == STATE_LINK_DOWN_TRY) {
-		raw_spin_lock_irqsave(&exynos_pcie->reg_lock, flags1);
+		spin_lock_irqsave(&exynos_pcie->reg_lock, flags1);
 		exynos_pcie->state = STATE_LINK_DOWN_TRY;
-		raw_spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags1);
+		spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags1);
 
 		disable_irq(pp->irq);
 
@@ -4077,9 +4090,9 @@ int exynos_pcie_rc_chk_link_status(int ch_num)
 		return 0;
 
 	if (exynos_pcie->cpl_timeout_recovery) {
-		raw_spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
+		spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 		exynos_pcie->state = STATE_LINK_DOWN;
-		raw_spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
+		spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
 		return 0;
 	}
 
@@ -4094,9 +4107,9 @@ int exynos_pcie_rc_chk_link_status(int ch_num)
 
 			exynos_pcie_rc_print_link_history(&pci->pp);
 
-			raw_spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
+			spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 			exynos_pcie->state = STATE_LINK_DOWN;
-			raw_spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
+			spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
 			link_status = 0;
 		}
 
@@ -4490,6 +4503,7 @@ static irqreturn_t exynos_pcie_msi0_handler(int irq, void *arg)
 		}
 		msi_vec->flags = 1;
 	}
+	exynos_pcie_msi_post_process(pp);
 
 	return IRQ_HANDLED;
 }
@@ -4638,7 +4652,7 @@ int register_separated_msi_vector(int ch_num, irq_handler_t handler, void *conte
 
 	ret = devm_request_irq(pci->dev, sep_msi_vec[ch_num][i].irq,
 			msi_handler[i],
-			IRQF_SHARED | IRQF_TRIGGER_HIGH | IRQF_NO_THREAD,
+			IRQF_SHARED | IRQF_TRIGGER_HIGH,
 			sep_irq_name[i], pp);
 	if (ret) {
 		pr_err("failed to request MSI%d irq\n", i);
@@ -4664,8 +4678,7 @@ static int exynos_pcie_rc_add_port(struct platform_device *pdev, struct pcie_por
 		return -ENODEV;
 	}
 	ret = devm_request_irq(&pdev->dev, pp->irq, exynos_pcie_rc_irq_handler,
-			       IRQF_SHARED | IRQF_TRIGGER_HIGH | IRQF_NO_THREAD,
-			       "exynos-pcie", pp);
+			       IRQF_SHARED | IRQF_TRIGGER_HIGH, "exynos-pcie", pp);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to request irq\n");
 
@@ -4686,7 +4699,7 @@ static int exynos_pcie_rc_add_port(struct platform_device *pdev, struct pcie_por
 				sep_msi_vec[ch_num][0].is_used = true;
 				ret = devm_request_irq(pci->dev, sep_msi_vec[ch_num][0].irq,
 						msi_handler[0],
-						IRQF_SHARED | IRQF_TRIGGER_HIGH | IRQF_NO_THREAD,
+						IRQF_SHARED | IRQF_TRIGGER_HIGH,
 						sep_irq_name[0], pp);
 				if (ret) {
 					dev_err(&pdev->dev, "failed to request MSI%d irq\n", i);
@@ -4962,7 +4975,7 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 	spin_lock_init(&exynos_pcie->pcie_l1_exit_lock);
 	spin_lock_init(&exynos_pcie->conf_lock);
 	spin_lock_init(&exynos_pcie->power_stats_lock);
-	raw_spin_lock_init(&exynos_pcie->reg_lock);
+	spin_lock_init(&exynos_pcie->reg_lock);
 	spin_lock_init(&exynos_pcie->s2mpu_refcnt_lock);
 
 	exynos_pcie->ch_num = ch_num;

@@ -787,7 +787,7 @@ void exit_oom_victim(void)
 void oom_killer_enable(void)
 {
 	oom_killer_disabled = false;
- 	pr_debug("OOM killer enabled.\n");
+	pr_info("OOM killer enabled.\n");
 }
 
 /**
@@ -824,7 +824,7 @@ bool oom_killer_disable(signed long timeout)
 		oom_killer_enable();
 		return false;
 	}
- 	pr_debug("OOM killer disabled.\n");
+	pr_info("OOM killer disabled.\n");
 
 	return true;
 }
@@ -1097,7 +1097,11 @@ bool out_of_memory(struct oom_control *oc)
 {
 	unsigned long freed = 0;
 
-	if (oom_killer_disabled || IS_ENABLED(CONFIG_ANDROID_SIMPLE_LMK))
+	/* Return true since Simple LMK automatically kills in the background */
+	if (IS_ENABLED(CONFIG_ANDROID_SIMPLE_LMK))
+		return true;
+
+	if (oom_killer_disabled)
 		return false;
 
 	if (!is_memcg_oom(oc)) {

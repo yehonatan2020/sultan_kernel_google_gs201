@@ -383,8 +383,7 @@ void pstore_record_init(struct pstore_record *record,
  * end of the buffer.
  */
 static void pstore_dump(struct kmsg_dumper *dumper,
-			enum kmsg_dump_reason reason,
-			struct kmsg_dumper_iter *iter)
+			enum kmsg_dump_reason reason)
 {
 	unsigned long	total = 0;
 	const char	*why;
@@ -436,7 +435,7 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 		dst_size -= header_size;
 
 		/* Write dump contents. */
-		if (!kmsg_dump_get_buffer(iter, true, dst + header_size,
+		if (!kmsg_dump_get_buffer(dumper, true, dst + header_size,
 					  dst_size, &dump_size))
 			break;
 
@@ -503,9 +502,8 @@ static void pstore_console_write(struct console *con, const char *s, unsigned c)
 }
 
 static struct console pstore_console = {
-	.write		= pstore_console_write,
-	.write_atomic	= pstore_console_write,
-	.index		= -1,
+	.write	= pstore_console_write,
+	.index	= -1,
 };
 
 static void pstore_register_console(void)

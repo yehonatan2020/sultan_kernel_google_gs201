@@ -121,30 +121,28 @@ EXPORT_SYMBOL_GPL(is_acpm_ipc_flushed);
 
 static int plugins_init(struct device_node *node)
 {
-	struct plugin __iomem *plugins;
+	struct plugin *plugins;
 	int i, len, ret = 0;
-	const char __iomem *name = NULL;
+	const char *name = NULL;
 	void __iomem *base_addr = NULL;
 	const __be32 *prop;
 	unsigned int offset;
-	char dvfs_name[5] = {0};
 
 	plugins = (struct plugin *)(acpm_srambase + acpm_initdata->plugins);
 
 	for (i = 0; i < acpm_initdata->num_plugins; i++) {
-		if (readb_relaxed(&plugins[i].is_attached) == 0)
+		if (plugins[i].is_attached == 0)
 			continue;
 
 		name = (const char *)(acpm_srambase + plugins[i].fw_name);
 		if (!plugins[i].fw_name || !name)
 			continue;
 
-		memcpy_fromio(dvfs_name, name, 4);
-		if (strcmp(dvfs_name, "DVFS") == 0 || strcmp(dvfs_name, "dvfs") == 0) {
+		if (strstr(name, "DVFS") || strstr(name, "dvfs")) {
 			prop = of_get_property(node, "fvmap_offset", &len);
 			if (prop) {
 				base_addr = acpm_srambase;
-				base_addr += (readl_relaxed(&plugins[i].base_addr) & ~0x1);
+				base_addr += (plugins[i].base_addr & ~0x1);
 				offset = be32_to_cpup(prop);
 				base_addr += offset;
 			}
@@ -416,7 +414,7 @@ static void check_response(struct acpm_ipc_ch *channel, struct ipc_config *cfg)
 	const void *src;
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&channel->rx_lock, flags);
+	spin_lock_irqsave(&channel->rx_lock, flags);
 
 	rx_front = __raw_readl(channel->rx_ch.front);
 	i = __raw_readl(channel->rx_ch.rear);
@@ -467,7 +465,7 @@ static void check_response(struct acpm_ipc_ch *channel, struct ipc_config *cfg)
 		}
 	}
 
-	raw_spin_unlock_irqrestore(&channel->rx_lock, flags);
+	spin_unlock_irqrestore(&channel->rx_lock, flags);
 }
 
 static void dequeue_policy(struct acpm_ipc_ch *channel)
@@ -478,14 +476,14 @@ static void dequeue_policy(struct acpm_ipc_ch *channel)
 	struct callback_info *cb;
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&channel->rx_lock, flags);
+	spin_lock_irqsave(&channel->rx_lock, flags);
 
 	pr_debug("[ACPM]%s, ipc_ch=%d, rx_ch.size=0x%X, type=0x%X\n",
 			__func__, channel->id, channel->rx_ch.size, channel->type);
 
 	if (channel->type == TYPE_BUFFER) {
 		memcpy_align_4(channel->cmd, channel->rx_ch.base, channel->rx_ch.size);
-		raw_spin_unlock_irqrestore(&channel->rx_lock, flags);
+		spin_unlock_irqrestore(&channel->rx_lock, flags);
 		list_for_each_entry(cb, cb_list, list)
 			if (cb && cb->ipc_callback)
 				cb->ipc_callback(channel->cmd, channel->rx_ch.size);
@@ -518,7 +516,7 @@ static void dequeue_policy(struct acpm_ipc_ch *channel)
 		front = __raw_readl(channel->rx_ch.front);
 	}
 
-	raw_spin_unlock_irqrestore(&channel->rx_lock, flags);
+	spin_unlock_irqrestore(&channel->rx_lock, flags);
 }
 
 static irqreturn_t acpm_ipc_irq_handler(int irq, void *data)
@@ -693,7 +691,7 @@ static int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg)
 	if (channel->tx_ch.len < 3)
 		return -EIO;
 
-	raw_spin_lock_irqsave(&channel->tx_lock, flags);
+	spin_lock_irqsave(&channel->tx_lock, flags);
 
 	/*
 	 * Reserve at least 2 elements in the queue to prevent buffer full and qfull.
@@ -731,7 +729,7 @@ static int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg)
 		 * We can't move it before taking the mutex,
 		 * because cfg->cmd could be used as a barrier.
 		 */
-		raw_spin_unlock_irqrestore(&channel->tx_lock, flags);
+		spin_unlock_irqrestore(&channel->tx_lock, flags);
 		return -EIO;
 	}
 
@@ -765,7 +763,7 @@ static int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg)
 	writel(tmp_index, channel->tx_ch.front);
 
 	apm_interrupt_gen(channel->id);
-	raw_spin_unlock_irqrestore(&channel->tx_lock, flags);
+	spin_unlock_irqrestore(&channel->tx_lock, flags);
 
 	if (channel->polling && cfg->response) {
 		unsigned int saved_debug_log_level = acpm_debug->debug_log_level;
@@ -984,8 +982,8 @@ static int channel_init(void)
 		}
 
 		init_completion(&acpm_ipc->channel[i].wait);
-		raw_spin_lock_init(&acpm_ipc->channel[i].rx_lock);
-		raw_spin_lock_init(&acpm_ipc->channel[i].tx_lock);
+		spin_lock_init(&acpm_ipc->channel[i].rx_lock);
+		spin_lock_init(&acpm_ipc->channel[i].tx_lock);
 		spin_lock_init(&acpm_ipc->channel[i].ch_lock);
 		INIT_LIST_HEAD(&acpm_ipc->channel[i].list);
 	}

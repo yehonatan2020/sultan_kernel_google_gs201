@@ -163,7 +163,7 @@ struct request {
 	 */
 	union {
 		struct hlist_node hash;	/* merge hash */
-		struct llist_node ipi_list;
+		struct list_head ipi_list;
 	};
 
 	/*
@@ -642,8 +642,8 @@ struct request_queue {
 #define QUEUE_FLAG_HCTX_ACTIVE	28	/* at least one blk-mq hctx is active */
 #define QUEUE_FLAG_NOWAIT       29	/* device supports NOWAIT */
 
-#define QUEUE_FLAG_MQ_DEFAULT	((0 << QUEUE_FLAG_IO_STAT) |		\
-				 (0 << QUEUE_FLAG_SAME_COMP) |		\
+#define QUEUE_FLAG_MQ_DEFAULT	((1 << QUEUE_FLAG_IO_STAT) |		\
+				 (1 << QUEUE_FLAG_SAME_COMP) |		\
 				 (1 << QUEUE_FLAG_NOWAIT))
 
 void blk_queue_flag_set(unsigned int flag, struct request_queue *q);
@@ -1257,8 +1257,9 @@ extern void blk_set_queue_dying(struct request_queue *);
  * as the lock contention for request_queue lock is reduced.
  *
  * It is ok not to disable preemption when adding the request to the plug list
- * or when attempting a merge. For details, please see schedule() where
- * blk_flush_plug() is called.
+ * or when attempting a merge, because blk_schedule_flush_list() will only flush
+ * the plug list when the task sleeps by itself. For details, please see
+ * schedule() where blk_schedule_flush_plug() is called.
  */
 struct blk_plug {
 	struct list_head mq_list; /* blk-mq requests */
@@ -1279,12 +1280,31 @@ extern struct blk_plug_cb *blk_check_plugged(blk_plug_cb_fn unplug,
 					     void *data, int size);
 extern void blk_start_plug(struct blk_plug *);
 extern void blk_finish_plug(struct blk_plug *);
+extern void blk_flush_plug_list(struct blk_plug *, bool);
 
-void __blk_flush_plug(struct blk_plug *plug, bool from_schedule);
-static inline void blk_flush_plug(struct blk_plug *plug, bool async)
+static inline void blk_flush_plug(struct task_struct *tsk)
 {
+	struct blk_plug *plug = tsk->plug;
+
 	if (plug)
-		__blk_flush_plug(plug, async);
+		blk_flush_plug_list(plug, false);
+}
+
+static inline void blk_schedule_flush_plug(struct task_struct *tsk)
+{
+	struct blk_plug *plug = tsk->plug;
+
+	if (plug)
+		blk_flush_plug_list(plug, true);
+}
+
+static inline bool blk_needs_flush_plug(struct task_struct *tsk)
+{
+	struct blk_plug *plug = tsk->plug;
+
+	return plug &&
+		 (!list_empty(&plug->mq_list) ||
+		 !list_empty(&plug->cb_list));
 }
 
 int blkdev_issue_flush(struct block_device *, gfp_t);
@@ -1301,8 +1321,18 @@ static inline void blk_finish_plug(struct blk_plug *plug)
 {
 }
 
-static inline void blk_flush_plug(struct blk_plug *plug, bool async)
+static inline void blk_flush_plug(struct task_struct *task)
 {
+}
+
+static inline void blk_schedule_flush_plug(struct task_struct *task)
+{
+}
+
+
+static inline bool blk_needs_flush_plug(struct task_struct *tsk)
+{
+	return false;
 }
 
 static inline int blkdev_issue_flush(struct block_device *bdev, gfp_t gfp_mask)

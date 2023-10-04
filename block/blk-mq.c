@@ -43,7 +43,7 @@
 
 #include <trace/hooks/block.h>
 
-static DEFINE_PER_CPU(struct llist_head, blk_cpu_done);
+static DEFINE_PER_CPU(struct list_head, blk_cpu_done);
 
 static void blk_mq_poll_stats_start(struct request_queue *q);
 static void blk_mq_poll_stats_fn(struct blk_stat_callback *cb);
@@ -572,29 +572,68 @@ void blk_mq_end_request(struct request *rq, blk_status_t error)
 }
 EXPORT_SYMBOL(blk_mq_end_request);
 
-static void blk_complete_reqs(struct llist_head *list)
-{
-	struct llist_node *entry = llist_reverse_order(llist_del_all(list));
-	struct request *rq, *next;
-
-	llist_for_each_entry_safe(rq, next, entry, ipi_list)
-		rq->q->mq_ops->complete(rq);
-}
-
+/*
+ * Softirq action handler - move entries to local list and loop over them
+ * while passing them to the queue registered handler.
+ */
 static __latent_entropy void blk_done_softirq(struct softirq_action *h)
 {
-	blk_complete_reqs(this_cpu_ptr(&blk_cpu_done));
+	struct list_head *cpu_list, local_list;
+
+	local_irq_disable();
+	cpu_list = this_cpu_ptr(&blk_cpu_done);
+	list_replace_init(cpu_list, &local_list);
+	local_irq_enable();
+
+	while (!list_empty(&local_list)) {
+		struct request *rq;
+
+		rq = list_entry(local_list.next, struct request, ipi_list);
+		list_del_init(&rq->ipi_list);
+		rq->q->mq_ops->complete(rq);
+	}
+}
+
+static void blk_mq_trigger_softirq(struct request *rq)
+{
+	struct list_head *list;
+	unsigned long flags;
+
+	local_irq_save(flags);
+	list = this_cpu_ptr(&blk_cpu_done);
+	list_add_tail(&rq->ipi_list, list);
+
+	/*
+	 * If the list only contains our just added request, signal a raise of
+	 * the softirq.  If there are already entries there, someone already
+	 * raised the irq but it hasn't run yet.
+	 */
+	if (list->next == &rq->ipi_list)
+		raise_softirq_irqoff(BLOCK_SOFTIRQ);
+	local_irq_restore(flags);
 }
 
 static int blk_softirq_cpu_dead(unsigned int cpu)
 {
-	blk_complete_reqs(&per_cpu(blk_cpu_done, cpu));
+	/*
+	 * If a CPU goes away, splice its entries to the current CPU
+	 * and trigger a run of the softirq
+	 */
+	local_irq_disable();
+	list_splice_init(&per_cpu(blk_cpu_done, cpu),
+			 this_cpu_ptr(&blk_cpu_done));
+	raise_softirq_irqoff(BLOCK_SOFTIRQ);
+	local_irq_enable();
+
 	return 0;
 }
 
+
 static void __blk_mq_complete_request_remote(void *data)
 {
-	__raise_softirq_irqoff(BLOCK_SOFTIRQ);
+	struct request *rq = data;
+
+	blk_mq_trigger_softirq(rq);
 }
 
 static inline bool blk_mq_complete_need_ipi(struct request *rq)
@@ -603,14 +642,6 @@ static inline bool blk_mq_complete_need_ipi(struct request *rq)
 
 	if (!IS_ENABLED(CONFIG_SMP) ||
 	    !test_bit(QUEUE_FLAG_SAME_COMP, &rq->q->queue_flags))
-		return false;
-	/*
-	 * With force threaded interrupts enabled, raising softirq from an SMP
-	 * function call will always result in waking the ksoftirqd thread.
-	 * This is probably worse than completing the request on a different
-	 * cache domain.
-	 */
-	if (force_irqthreads)
 		return false;
 
 	/* same CPU or cache domain?  Complete locally */
@@ -621,32 +652,6 @@ static inline bool blk_mq_complete_need_ipi(struct request *rq)
 
 	/* don't try to IPI to an offline CPU */
 	return cpu_online(rq->mq_ctx->cpu);
-}
-
-static void blk_mq_complete_send_ipi(struct request *rq)
-{
-	struct llist_head *list;
-	unsigned int cpu;
-
-	cpu = rq->mq_ctx->cpu;
-	list = &per_cpu(blk_cpu_done, cpu);
-	if (llist_add(&rq->ipi_list, list)) {
-		rq->csd.func = __blk_mq_complete_request_remote;
-		rq->csd.info = rq;
-		rq->csd.flags = 0;
-		smp_call_function_single_async(cpu, &rq->csd);
-	}
-}
-
-static void blk_mq_raise_softirq(struct request *rq)
-{
-	struct llist_head *list;
-
-	preempt_disable();
-	list = this_cpu_ptr(&blk_cpu_done);
-	if (llist_add(&rq->ipi_list, list))
-		raise_softirq(BLOCK_SOFTIRQ);
-	preempt_enable();
 }
 
 bool blk_mq_complete_request_remote(struct request *rq)
@@ -661,15 +666,17 @@ bool blk_mq_complete_request_remote(struct request *rq)
 		return false;
 
 	if (blk_mq_complete_need_ipi(rq)) {
-		blk_mq_complete_send_ipi(rq);
-		return true;
+		rq->csd.func = __blk_mq_complete_request_remote;
+		rq->csd.info = rq;
+		rq->csd.flags = 0;
+		smp_call_function_single_async(rq->mq_ctx->cpu, &rq->csd);
+	} else {
+		if (rq->q->nr_hw_queues > 1)
+			return false;
+		blk_mq_trigger_softirq(rq);
 	}
 
-	if (rq->q->nr_hw_queues == 1) {
-		blk_mq_raise_softirq(rq);
-		return true;
-	}
-	return false;
+	return true;
 }
 EXPORT_SYMBOL_GPL(blk_mq_complete_request_remote);
 
@@ -1578,14 +1585,14 @@ static void __blk_mq_delay_run_hw_queue(struct blk_mq_hw_ctx *hctx, bool async,
 		return;
 
 	if (!async && !(hctx->flags & BLK_MQ_F_BLOCKING)) {
-		int cpu = get_cpu_light();
+		int cpu = get_cpu();
 		if (cpumask_test_cpu(cpu, hctx->cpumask)) {
 			__blk_mq_run_hw_queue(hctx);
-			put_cpu_light();
+			put_cpu();
 			return;
 		}
 
-		put_cpu_light();
+		put_cpu();
 	}
 
 	kblockd_mod_delayed_work_on(blk_mq_hctx_next_cpu(hctx), &hctx->run_work,
@@ -2263,7 +2270,7 @@ blk_qc_t blk_mq_submit_bio(struct bio *bio)
 
 		if (request_count >= blk_plug_max_rq_count(plug) || (last &&
 		    blk_rq_bytes(last) >= BLK_PLUG_FLUSH_SIZE)) {
-			blk_mq_flush_plug_list(plug, false);
+			blk_flush_plug_list(plug, false);
 			trace_block_plug(q);
 		}
 
@@ -3965,7 +3972,8 @@ int blk_poll(struct request_queue *q, blk_qc_t cookie, bool spin)
 	    !test_bit(QUEUE_FLAG_POLL, &q->queue_flags))
 		return 0;
 
-	blk_flush_plug(current->plug, false);
+	if (current->plug)
+		blk_flush_plug_list(current->plug, false);
 
 	hctx = q->queue_hw_ctx[blk_qc_t_to_queue_num(cookie)];
 
@@ -4020,7 +4028,7 @@ static int __init blk_mq_init(void)
 	int i;
 
 	for_each_possible_cpu(i)
-		init_llist_head(&per_cpu(blk_cpu_done, i));
+		INIT_LIST_HEAD(&per_cpu(blk_cpu_done, i));
 	open_softirq(BLOCK_SOFTIRQ, blk_done_softirq);
 
 	cpuhp_setup_state_nocalls(CPUHP_BLOCK_SOFTIRQ_DEAD,

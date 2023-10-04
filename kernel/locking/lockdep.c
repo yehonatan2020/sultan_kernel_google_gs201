@@ -1745,7 +1745,7 @@ static enum bfs_result __bfs(struct lock_list *source_entry,
 
 		/*
 		 * Step 4: if not match, expand the path by adding the
-		 *         forward or backwards dependencies in the search
+		 *         forward or backwards dependencis in the search
 		 *
 		 */
 		first = true;
@@ -1912,7 +1912,7 @@ print_circular_bug_header(struct lock_list *entry, unsigned int depth,
  * -> B is -(ER)-> or -(EN)->, then we don't need to add A -> B into the
  * dependency graph, as any strong path ..-> A -> B ->.. we can get with
  * having dependency A -> B, we could already get a equivalent path ..-> A ->
- * .. -> B -> .. with A -> .. -> B. Therefore A -> B is redundant.
+ * .. -> B -> .. with A -> .. -> B. Therefore A -> B is reduntant.
  *
  * We need to make sure both the start and the end of A -> .. -> B is not
  * weaker than A -> B. For the start part, please see the comment in
@@ -5413,7 +5413,6 @@ static noinstr void check_flags(unsigned long flags)
 		}
 	}
 
-#ifndef CONFIG_PREEMPT_RT
 	/*
 	 * We dont accurately track softirq state in e.g.
 	 * hardirq contexts (such as on 4KSTACKS), so only
@@ -5428,7 +5427,6 @@ static noinstr void check_flags(unsigned long flags)
 			DEBUG_LOCKS_WARN_ON(!current->softirqs_enabled);
 		}
 	}
-#endif
 
 	if (!debug_locks)
 		print_irqtrace_events(current);

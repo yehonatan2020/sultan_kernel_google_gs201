@@ -41,7 +41,6 @@
 #include <linux/mman.h>
 #include <linux/mmu_notifier.h>
 #include <linux/fs.h>
-#include <linux/kprobes.h>
 #include <linux/mm.h>
 #include <linux/mm_inline.h>
 #include <linux/vmacache.h>
@@ -300,7 +299,7 @@ static inline void free_thread_stack(struct task_struct *tsk)
 			return;
 		}
 
-		vfree(tsk->stack);
+		vfree_atomic(tsk->stack);
 		return;
 	}
 #endif
@@ -734,19 +733,6 @@ void __mmdrop(struct mm_struct *mm)
 }
 EXPORT_SYMBOL_GPL(__mmdrop);
 
-#ifdef CONFIG_PREEMPT_RT
-/*
- * RCU callback for delayed mm drop. Not strictly rcu, but we don't
- * want another facility to make this work.
- */
-void __mmdrop_delayed(struct rcu_head *rhp)
-{
-	struct mm_struct *mm = container_of(rhp, struct mm_struct, delayed_drop);
-
-	__mmdrop(mm);
-}
-#endif
-
 static void mmdrop_async_fn(struct work_struct *work)
 {
 	struct mm_struct *mm;
@@ -788,15 +774,6 @@ void __put_task_struct(struct task_struct *tsk)
 	WARN_ON(refcount_read(&tsk->usage));
 	WARN_ON(tsk == current);
 
-	/*
-	 * Remove function-return probe instances associated with this
-	 * task and put them back on the free list.
-	 */
-	kprobe_flush_task(tsk);
-
-	/* Task is done with its stack. */
-	put_task_stack(tsk);
-
 	io_uring_free(tsk);
 	cgroup_free(tsk);
 	task_numa_free(tsk, true);
@@ -809,14 +786,6 @@ void __put_task_struct(struct task_struct *tsk)
 		free_task(tsk);
 }
 EXPORT_SYMBOL_GPL(__put_task_struct);
-
-void __put_task_struct_rcu_cb(struct rcu_head *rhp)
-{
-	struct task_struct *task = container_of(rhp, struct task_struct, rcu);
-
-	__put_task_struct(task);
-}
-EXPORT_SYMBOL_GPL(__put_task_struct_rcu_cb);
 
 void __init __weak arch_task_cache_init(void) { }
 
@@ -1007,7 +976,6 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	account_kernel_stack(tsk, 1);
 
 	kcov_task_init(tsk);
-	kmap_local_fork(tsk);
 
 #ifdef CONFIG_FAULT_INJECTION
 	tsk->fail_nth = 0;

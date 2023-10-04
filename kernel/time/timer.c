@@ -1270,16 +1270,9 @@ static inline void timer_base_unlock_expiry(struct timer_base *base)
  */
 static void timer_sync_wait_running(struct timer_base *base)
 {
-	bool need_preempt;
-
-	need_preempt = task_is_pi_boosted(current);
-	if (need_preempt || atomic_read(&base->timer_waiters)) {
+	if (atomic_read(&base->timer_waiters)) {
 		raw_spin_unlock_irq(&base->lock);
 		spin_unlock(&base->expiry_lock);
-
-		if (need_preempt)
-			softirq_preempt();
-
 		spin_lock(&base->expiry_lock);
 		raw_spin_lock_irq(&base->lock);
 	}
@@ -1300,7 +1293,7 @@ static void del_timer_wait_running(struct timer_list *timer)
 	u32 tf;
 
 	tf = READ_ONCE(timer->flags);
-	if (!(tf & (TIMER_MIGRATING | TIMER_IRQSAFE))) {
+	if (!(tf & TIMER_MIGRATING)) {
 		struct timer_base *base = get_timer_base(tf);
 
 		/*
@@ -1383,13 +1376,6 @@ int del_timer_sync(struct timer_list *timer)
 	 * could lead to deadlock.
 	 */
 	WARN_ON(in_irq() && !(timer->flags & TIMER_IRQSAFE));
-
-	/*
-	 * Must be able to sleep on PREEMPT_RT because of the slowpath in
-	 * del_timer_wait_running().
-	 */
-	if (IS_ENABLED(CONFIG_PREEMPT_RT) && !(timer->flags & TIMER_IRQSAFE))
-		lockdep_assert_preemption_enabled();
 
 	do {
 		ret = try_to_del_timer_sync(timer);
@@ -1805,7 +1791,7 @@ void run_local_timers(void)
 		if (time_before(jiffies, base->next_expiry))
 			return;
 	}
-	raise_timer_softirq();
+	raise_softirq(TIMER_SOFTIRQ);
 }
 
 /*
@@ -1966,7 +1952,6 @@ int timers_prepare_cpu(unsigned int cpu)
 		base = per_cpu_ptr(&timer_bases[b], cpu);
 		base->clk = jiffies;
 		base->next_expiry = base->clk + NEXT_TIMER_MAX_DELTA;
-		base->next_expiry_recalc = false;
 		base->timers_pending = false;
 		base->is_idle = false;
 	}

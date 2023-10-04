@@ -545,14 +545,7 @@ enum
 	NR_SOFTIRQS
 };
 
-/*
- * Ignoring the RCU vector after ksoftirqd is parked is fine
- * because:
- * 	1) rcutree_migrate_callbacks() takes care of the queue.
- * 	2) rcu_report_dead() reports the final quiescent states.
- */
-#define SOFTIRQ_HOTPLUG_SAFE_MASK (BIT(RCU_SOFTIRQ))
-
+#define SOFTIRQ_STOP_IDLE_MASK (~(1 << RCU_SOFTIRQ))
 /* Softirq's where the handling might be long: */
 #define LONG_SOFTIRQ_MASK ((1 << NET_TX_SOFTIRQ)       | \
 			   (1 << NET_RX_SOFTIRQ)       | \
@@ -586,49 +579,12 @@ static inline void do_softirq_own_stack(void)
 }
 #endif
 
-#ifdef CONFIG_PREEMPT_RT
-extern void do_softirq_post_smp_call_flush(unsigned int was_pending);
-#else
-static inline void do_softirq_post_smp_call_flush(unsigned int unused)
-{
-	do_softirq();
-}
-#endif
-
 extern void open_softirq(int nr, void (*action)(struct softirq_action *));
 extern void softirq_init(void);
 extern void __raise_softirq_irqoff(unsigned int nr);
 
 extern void raise_softirq_irqoff(unsigned int nr);
 extern void raise_softirq(unsigned int nr);
-
-#ifdef CONFIG_PREEMPT_RT
-DECLARE_PER_CPU(unsigned long, pending_timer_softirq);
-
-extern void raise_timer_softirq(void);
-extern void raise_hrtimer_softirq(void);
-
-static inline unsigned int local_pending_timers(void)
-{
-        return __this_cpu_read(pending_timer_softirq);
-}
-
-#else
-static inline void raise_timer_softirq(void)
-{
-	raise_softirq(TIMER_SOFTIRQ);
-}
-
-static inline void raise_hrtimer_softirq(void)
-{
-	raise_softirq_irqoff(HRTIMER_SOFTIRQ);
-}
-
-static inline unsigned int local_pending_timers(void)
-{
-        return local_softirq_pending();
-}
-#endif
 
 DECLARE_PER_CPU(struct task_struct *, ksoftirqd);
 DECLARE_PER_CPU(__u32, active_softirqs);
@@ -709,21 +665,26 @@ enum
 	TASKLET_STATE_RUN	/* Tasklet is running (SMP only) */
 };
 
-#if defined(CONFIG_SMP) || defined(CONFIG_PREEMPT_RT)
+#ifdef CONFIG_SMP
 static inline int tasklet_trylock(struct tasklet_struct *t)
 {
 	return !test_and_set_bit(TASKLET_STATE_RUN, &(t)->state);
 }
 
-void tasklet_unlock(struct tasklet_struct *t);
-void tasklet_unlock_wait(struct tasklet_struct *t);
-void tasklet_unlock_spin_wait(struct tasklet_struct *t);
+static inline void tasklet_unlock(struct tasklet_struct *t)
+{
+	smp_mb__before_atomic();
+	clear_bit(TASKLET_STATE_RUN, &(t)->state);
+}
 
+static inline void tasklet_unlock_wait(struct tasklet_struct *t)
+{
+	while (test_bit(TASKLET_STATE_RUN, &(t)->state)) { barrier(); }
+}
 #else
-static inline int tasklet_trylock(struct tasklet_struct *t) { return 1; }
-static inline void tasklet_unlock(struct tasklet_struct *t) { }
-static inline void tasklet_unlock_wait(struct tasklet_struct *t) { }
-static inline void tasklet_unlock_spin_wait(struct tasklet_struct *t) { }
+#define tasklet_trylock(t) 1
+#define tasklet_unlock_wait(t) do { } while (0)
+#define tasklet_unlock(t) do { } while (0)
 #endif
 
 extern void __tasklet_schedule(struct tasklet_struct *t);
@@ -746,17 +707,6 @@ static inline void tasklet_disable_nosync(struct tasklet_struct *t)
 {
 	atomic_inc(&t->count);
 	smp_mb__after_atomic();
-}
-
-/*
- * Do not use in new code. Disabling tasklets from atomic contexts is
- * error prone and should be avoided.
- */
-static inline void tasklet_disable_in_atomic(struct tasklet_struct *t)
-{
-	tasklet_disable_nosync(t);
-	tasklet_unlock_spin_wait(t);
-	smp_mb();
 }
 
 static inline void tasklet_disable(struct tasklet_struct *t)

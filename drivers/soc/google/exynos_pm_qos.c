@@ -30,6 +30,7 @@
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/spinlock.h>
+#include <linux/rwlock.h>
 #include <linux/slab.h>
 #include <linux/time.h>
 #include <linux/fs.h>

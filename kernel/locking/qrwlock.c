@@ -12,12 +12,13 @@
 #include <linux/percpu.h>
 #include <linux/hardirq.h>
 #include <linux/spinlock.h>
+#include <asm/qrwlock.h>
 
 /**
- * queued_read_lock_slowpath - acquire read lock of a queued rwlock
- * @lock: Pointer to queued rwlock structure
+ * queued_read_lock_slowpath - acquire read lock of a queue rwlock
+ * @lock: Pointer to queue rwlock structure
  */
-void __lockfunc queued_read_lock_slowpath(struct qrwlock *lock)
+void queued_read_lock_slowpath(struct qrwlock *lock)
 {
 	/*
 	 * Readers come here when they cannot get the lock without waiting
@@ -55,10 +56,10 @@ void __lockfunc queued_read_lock_slowpath(struct qrwlock *lock)
 EXPORT_SYMBOL(queued_read_lock_slowpath);
 
 /**
- * queued_write_lock_slowpath - acquire write lock of a queued rwlock
- * @lock : Pointer to queued rwlock structure
+ * queued_write_lock_slowpath - acquire write lock of a queue rwlock
+ * @lock : Pointer to queue rwlock structure
  */
-void __lockfunc queued_write_lock_slowpath(struct qrwlock *lock)
+void queued_write_lock_slowpath(struct qrwlock *lock)
 {
 	int cnts;
 
@@ -66,12 +67,12 @@ void __lockfunc queued_write_lock_slowpath(struct qrwlock *lock)
 	arch_spin_lock(&lock->wait_lock);
 
 	/* Try to acquire the lock directly if no reader is present */
-	if (!(cnts = atomic_read(&lock->cnts)) &&
-	    atomic_try_cmpxchg_acquire(&lock->cnts, &cnts, _QW_LOCKED))
+	if (!atomic_read(&lock->cnts) &&
+	    (atomic_cmpxchg_acquire(&lock->cnts, 0, _QW_LOCKED) == 0))
 		goto unlock;
 
 	/* Set the waiting flag to notify readers that a writer is pending */
-	atomic_or(_QW_WAITING, &lock->cnts);
+	atomic_add(_QW_WAITING, &lock->cnts);
 
 	/* When no more readers or writers, set the locked flag */
 	do {

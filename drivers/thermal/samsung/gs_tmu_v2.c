@@ -76,10 +76,6 @@ enum tmu_grp_idx_t {
 	TZ_END,
 };
 
-/* Always disable CPU pause feature */
-#define pause_cpus(x) 1
-#define resume_cpus(x) 1
-
 #if defined(CONFIG_SOC_GS101)
 #define TZ_BIG_SENSOR_MASK (TMU_P0_SENSOR_MASK | \
 			    TMU_P6_SENSOR_MASK | \
@@ -1560,7 +1556,8 @@ static int gs_map_dt_data(struct platform_device *pdev)
 
 	dev_info(&pdev->dev, "tmu type: %d \n", data->tmu_type);
 
-	data->pause_enable = false; /* Always disable CPU pause feature */
+	data->pause_enable = of_property_read_bool(pdev->dev.of_node,
+						   "pause_enable");
 	if (data->pause_enable) {
 		dev_info(&pdev->dev, "thermal zone use pause function\n");
 
@@ -3328,8 +3325,7 @@ static int gs_tmu_probe(struct platform_device *pdev)
 	}
 
 	ret = devm_request_irq(&pdev->dev, data->irq, gs_tmu_irq,
-			       IRQF_SHARED | IRQF_NO_THREAD,
-			       dev_name(&pdev->dev), data);
+			       IRQF_SHARED, dev_name(&pdev->dev), data);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to request irq: %d\n", data->irq);
 		goto err_thermal;

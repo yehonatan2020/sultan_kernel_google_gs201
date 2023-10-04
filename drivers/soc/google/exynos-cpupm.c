@@ -144,7 +144,7 @@ static void do_nothing(void *unused) { }
 /******************************************************************************
  *                                    Notifier                                *
  ******************************************************************************/
-static DEFINE_RAW_SPINLOCK(notifier_lock);
+static DEFINE_RWLOCK(notifier_lock);
 static RAW_NOTIFIER_HEAD(notifier_chain);
 
 int exynos_cpupm_notifier_register(struct notifier_block *nb)
@@ -152,9 +152,9 @@ int exynos_cpupm_notifier_register(struct notifier_block *nb)
 	unsigned long flags;
 	int ret;
 
-	raw_spin_lock_irqsave(&notifier_lock, flags);
+	write_lock_irqsave(&notifier_lock, flags);
 	ret = raw_notifier_chain_register(&notifier_chain, nb);
-	raw_spin_unlock_irqrestore(&notifier_lock, flags);
+	write_unlock_irqrestore(&notifier_lock, flags);
 
 	return ret;
 }
@@ -164,9 +164,9 @@ static int exynos_cpupm_notify(int event, int v)
 {
 	int ret;
 
-	raw_spin_lock(&notifier_lock);
+	read_lock(&notifier_lock);
 	ret = raw_notifier_call_chain(&notifier_chain, event, &v);
-	raw_spin_unlock(&notifier_lock);
+	read_unlock(&notifier_lock);
 
 	return notifier_to_errno(ret);
 }
@@ -194,7 +194,7 @@ struct idle_ip {
 	unsigned int		pmu_offset;
 };
 
-static DEFINE_RAW_SPINLOCK(idle_ip_lock);
+static DEFINE_SPINLOCK(idle_ip_lock);
 
 static LIST_HEAD(ip_list);
 
@@ -227,15 +227,15 @@ static bool ip_busy(void)
 	struct idle_ip *ip;
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&idle_ip_lock, flags);
+	spin_lock_irqsave(&idle_ip_lock, flags);
 	list_for_each_entry(ip, &ip_list, list) {
 		if (__ip_busy(ip)) {
-			raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+			spin_unlock_irqrestore(&idle_ip_lock, flags);
 			/* IP is busy */
 			return true;
 		}
 	}
-	raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+	spin_unlock_irqrestore(&idle_ip_lock, flags);
 
 	/* IPs are idle */
 	return false;
@@ -261,16 +261,16 @@ void exynos_update_ip_idle_status(int index, int idle)
 	struct idle_ip *ip;
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&idle_ip_lock, flags);
+	spin_lock_irqsave(&idle_ip_lock, flags);
 	ip = find_ip(index);
 	if (!ip) {
 		pr_err("unknown idle-ip index %d\n", index);
-		raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+		spin_unlock_irqrestore(&idle_ip_lock, flags);
 		return;
 	}
 
 	ip->idle = idle;
-	raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+	spin_unlock_irqrestore(&idle_ip_lock, flags);
 }
 EXPORT_SYMBOL_GPL(exynos_update_ip_idle_status);
 
@@ -287,7 +287,7 @@ int exynos_get_idle_ip_index(const char *name)
 	if (!ip)
 		return -ENOMEM;
 
-	raw_spin_lock_irqsave(&idle_ip_lock, flags);
+	spin_lock_irqsave(&idle_ip_lock, flags);
 
 	if (list_empty(&ip_list))
 		new_index = 0;
@@ -299,7 +299,7 @@ int exynos_get_idle_ip_index(const char *name)
 	ip->type = NORMAL_IP;
 	list_add_tail(&ip->list, &ip_list);
 
-	raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+	spin_unlock_irqrestore(&idle_ip_lock, flags);
 
 	exynos_update_ip_idle_status(ip->index, CPUPM_STATE_BUSY);
 
@@ -329,7 +329,7 @@ static void vendor_hook_cpu_idle_enter(void *data, int *state, struct cpuidle_de
  * the power mode, it is necessary to set the critical section to check the
  * state of cpus in the power domain, cpupm_lock is used for it.
  */
-static DEFINE_RAW_SPINLOCK(cpupm_lock);
+static spinlock_t cpupm_lock;
 
 static void awake_cpus(const struct cpumask *cpus)
 {
@@ -603,7 +603,7 @@ static void exynos_cpupm_enter(int cpu)
 	struct exynos_cpupm *pm;
 	int i;
 
-	raw_spin_lock(&cpupm_lock);
+	spin_lock(&cpupm_lock);
 	pm = per_cpu_ptr(cpupm, cpu);
 
 	/* Configure PMUCAL to power down core */
@@ -624,7 +624,7 @@ static void exynos_cpupm_enter(int cpu)
 			enter_power_mode(cpu, mode);
 	}
 
-	raw_spin_unlock(&cpupm_lock);
+	spin_unlock(&cpupm_lock);
 }
 
 static void exynos_cpupm_exit(int cpu, int cancel)
@@ -632,7 +632,7 @@ static void exynos_cpupm_exit(int cpu, int cancel)
 	struct exynos_cpupm *pm;
 	int i;
 
-	raw_spin_lock(&cpupm_lock);
+	spin_lock(&cpupm_lock);
 	pm = per_cpu_ptr(cpupm, cpu);
 
 	/* Make settings to exit from mode */
@@ -653,7 +653,7 @@ static void exynos_cpupm_exit(int cpu, int cancel)
 	/* Configure PMUCAL to power up core */
 	cal_cpu_enable(cpu);
 
-	raw_spin_unlock(&cpupm_lock);
+	spin_unlock(&cpupm_lock);
 }
 
 static int exynos_cpu_pm_notify_callback(struct notifier_block *self,
@@ -959,7 +959,7 @@ static int extern_idle_ip_init(struct device_node *dn)
 	if (!ip)
 		return -ENOMEM;
 
-	raw_spin_lock_irqsave(&idle_ip_lock, flags);
+	spin_lock_irqsave(&idle_ip_lock, flags);
 
 	for (i = 0; i < count; i++) {
 		const char *name;
@@ -978,7 +978,7 @@ static int extern_idle_ip_init(struct device_node *dn)
 		list_add_tail(&ip->list, &ip_list);
 	}
 
-	raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+	spin_unlock_irqrestore(&idle_ip_lock, flags);
 
 	return 0;
 }
@@ -1028,6 +1028,8 @@ static int exynos_cpupm_probe(struct platform_device *pdev)
 	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
 			  "AP_EXYNOS_CPU_POWER_DOWN_CONTROL",
 			  NULL, cpuhp_cpupm_offline);
+
+	spin_lock_init(&cpupm_lock);
 
 	nscode_base = ioremap(NSCODE_BASE, SZ_4K);
 

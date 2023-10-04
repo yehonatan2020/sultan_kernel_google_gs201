@@ -354,9 +354,13 @@ static void uart_sfr_dump(struct exynos_uart_port *ourport)
 	);
 }
 
-static void change_uart_gpio_locked(int value, struct exynos_uart_port *ourport)
+static void change_uart_gpio(int value, struct exynos_uart_port *ourport)
 {
-	int status;
+	int status = 0;
+	struct uart_port *port = &ourport->port;
+	unsigned long flags;
+
+	spin_lock_irqsave(&port->lock, flags);
 
 	if (value) {
 		/* Disabled or default pin states	*/
@@ -392,15 +396,7 @@ static void change_uart_gpio_locked(int value, struct exynos_uart_port *ourport)
 			ourport->rts_control = RTS_CTRL_DISABLE;
 		}
 	}
-}
 
-static void change_uart_gpio(int value, struct exynos_uart_port *ourport)
-{
-	struct uart_port *port = &ourport->port;
-	unsigned long flags;
-
-	spin_lock_irqsave(&port->lock, flags);
-	change_uart_gpio_locked(value, ourport);
 	spin_unlock_irqrestore(&port->lock, flags);
 }
 
@@ -2171,7 +2167,7 @@ exynos_serial_ports[CONFIG_SERIAL_EXYNOS_UARTS] = {
 static struct exynos_uart_port *exynos_serial_default_port(int port_index)
 {
 	exynos_serial_ports[port_index].port.lock =
-		(spinlock_t)__PORT_LOCK_UNLOCKED(port_index);
+		__PORT_LOCK_UNLOCKED(port_index);
 	exynos_serial_ports[port_index].port.iotype = UPIO_MEM;
 	exynos_serial_ports[port_index].port.uartclk = 0;
 	exynos_serial_ports[port_index].port.fifosize = 0;
@@ -2479,18 +2475,17 @@ static int exynos_serial_notifier(struct notifier_block *self,
 			if (port->state->pm_state == UART_PM_STATE_OFF)
 				continue;
 
-			if (unlikely(WARN_ON(!spin_trylock_irqsave(&port->lock, flags))))
-				return NOTIFY_BAD;
+			spin_lock_irqsave(&port->lock, flags);
 
 			/* disable auto flow control & set nRTS for High */
 			umcon = rd_regl(port, S3C2410_UMCON);
 			umcon &= ~(S3C2410_UMCOM_AFC | S3C2410_UMCOM_RTS_LOW);
 			wr_regl(port, S3C2410_UMCON, umcon);
 
-			if (ourport->rts_control)
-				change_uart_gpio_locked(RTS_PINCTRL, ourport);
-
 			spin_unlock_irqrestore(&port->lock, flags);
+
+			if (ourport->rts_control)
+				change_uart_gpio(RTS_PINCTRL, ourport);
 		}
 
 		exynos_serial_fifo_wait();
@@ -2503,8 +2498,7 @@ static int exynos_serial_notifier(struct notifier_block *self,
 			if (port->state->pm_state == UART_PM_STATE_OFF)
 				continue;
 
-			if (unlikely(WARN_ON(!spin_trylock_irqsave(&port->lock, flags))))
-				continue;
+			spin_lock_irqsave(&port->lock, flags);
 
 			if (!ourport->dbg_uart_ch) {
 				/* enable auto flow control */
@@ -2513,10 +2507,10 @@ static int exynos_serial_notifier(struct notifier_block *self,
 				wr_regl(port, S3C2410_UMCON, umcon);
 			}
 
-			if (ourport->rts_control)
-				change_uart_gpio_locked(DEFAULT_PINCTRL, ourport);
-
 			spin_unlock_irqrestore(&port->lock, flags);
+
+			if (ourport->rts_control)
+				change_uart_gpio(DEFAULT_PINCTRL, ourport);
 		}
 		break;
 

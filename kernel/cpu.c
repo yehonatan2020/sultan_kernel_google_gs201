@@ -41,6 +41,10 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/cpuhp.h>
 
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/sched.h>
+#include <trace/hooks/cpu.h>
+
 #include "smpboot.h"
 
 /**
@@ -1124,6 +1128,8 @@ static int cpu_down(unsigned int cpu, enum cpuhp_state target)
 {
 	int err;
 
+	trace_android_vh_cpu_down(NULL);
+
 	cpu_maps_update_begin();
 	err = cpu_down_maps_locked(cpu, target);
 	cpu_maps_update_done();
@@ -1154,6 +1160,251 @@ int remove_cpu(unsigned int cpu)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(remove_cpu);
+
+extern int  dl_bw_check_overflow(int cpu);
+
+int __pause_drain_rq(struct cpumask *cpus)
+{
+	unsigned int cpu;
+	int err = 0;
+
+	/*
+	 * Disabling preemption avoids that one of the stopper, started from
+	 * sched_cpu_drain_rq(), blocks firing draining for the whole cpumask.
+	 */
+	preempt_disable();
+	for_each_cpu(cpu, cpus) {
+		err = sched_cpu_drain_rq(cpu);
+		if (err)
+			break;
+	}
+	preempt_enable();
+
+	return err;
+}
+
+void __wait_drain_rq(struct cpumask *cpus)
+{
+	unsigned int cpu;
+
+	for_each_cpu(cpu, cpus)
+		sched_cpu_drain_rq_wait(cpu);
+}
+
+/* if rt task, set to cfs and return previous prio */
+static int pause_reduce_prio(void)
+{
+	int prev_prio = -1;
+
+	if (current->prio < MAX_RT_PRIO) {
+		struct sched_param param = { .sched_priority = 0 };
+
+		prev_prio = current->prio;
+		sched_setscheduler_nocheck(current, SCHED_NORMAL, &param);
+	}
+
+	return prev_prio;
+}
+
+/* if previous prio was set, restore */
+static void pause_restore_prio(int prev_prio)
+{
+	if (prev_prio >= 0 && prev_prio < MAX_RT_PRIO) {
+		struct sched_param param = { .sched_priority = MAX_RT_PRIO-1-prev_prio };
+
+		sched_setscheduler_nocheck(current, SCHED_FIFO, &param);
+	}
+}
+
+int pause_cpus(struct cpumask *cpus)
+{
+	int err = 0;
+	int cpu;
+	u64 start_time = 0;
+	int prev_prio;
+
+	start_time = sched_clock();
+
+	cpu_maps_update_begin();
+
+	if (cpu_hotplug_disabled) {
+		err = -EBUSY;
+		goto err_cpu_maps_update;
+	}
+
+	/* Pausing an already inactive CPU isn't an error */
+	cpumask_and(cpus, cpus, cpu_active_mask);
+
+	for_each_cpu(cpu, cpus) {
+		if (!cpu_online(cpu) || dl_bw_check_overflow(cpu) ||
+			get_cpu_device(cpu)->offline_disabled == true) {
+			err = -EBUSY;
+			goto err_cpu_maps_update;
+		}
+	}
+
+	if (cpumask_weight(cpus) >= num_active_cpus()) {
+		err = -EBUSY;
+		goto err_cpu_maps_update;
+	}
+
+	if (cpumask_empty(cpus))
+		goto err_cpu_maps_update;
+
+	/*
+	 * Lazy migration:
+	 *
+	 * We do care about how fast a CPU can go idle and stay this in this
+	 * state. If we try to take the cpus_write_lock() here, we would have
+	 * to wait for a few dozens of ms, as this function might schedule.
+	 * However, we can, as a first step, flip the active mask and migrate
+	 * anything currently on the run-queue, to give a chance to the paused
+	 * CPUs to reach quickly an idle state. There's a risk meanwhile for
+	 * another CPU to observe an out-of-date active_mask or to incompletely
+	 * update a cpuset. Both problems would be resolved later in the slow
+	 * path, which ensures active_mask synchronization, triggers a cpuset
+	 * rebuild and migrate any task that would have escaped the lazy
+	 * migration.
+	 */
+	for_each_cpu(cpu, cpus)
+		set_cpu_active(cpu, false);
+	err = __pause_drain_rq(cpus);
+	if (err) {
+		__wait_drain_rq(cpus);
+		for_each_cpu(cpu, cpus)
+			set_cpu_active(cpu, true);
+		goto err_cpu_maps_update;
+	}
+
+	prev_prio = pause_reduce_prio();
+
+	/*
+	 * Slow path deactivation:
+	 *
+	 * Now that paused CPUs are most likely idle, we can go through a
+	 * complete scheduler deactivation.
+	 *
+	 * The cpu_active_mask being already set and cpus_write_lock calling
+	 * synchronize_rcu(), we know that all preempt-disabled and RCU users
+	 * will observe the updated value.
+	 */
+	cpus_write_lock();
+
+	__wait_drain_rq(cpus);
+
+	cpuhp_tasks_frozen = 0;
+
+	if (sched_cpus_deactivate_nosync(cpus)) {
+		err = -EBUSY;
+		goto err_cpus_write_unlock;
+	}
+
+	err = __pause_drain_rq(cpus);
+	__wait_drain_rq(cpus);
+	if (err) {
+		for_each_cpu(cpu, cpus)
+			sched_cpu_activate(cpu);
+		goto err_cpus_write_unlock;
+	}
+
+	/*
+	 * Even if living on the side of the regular HP path, pause is using
+	 * one of the HP step (CPUHP_AP_ACTIVE). This should be reflected on the
+	 * current state of the CPU.
+	 */
+	for_each_cpu(cpu, cpus) {
+		struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
+
+		st->state = CPUHP_AP_ACTIVE - 1;
+		st->target = st->state;
+	}
+
+err_cpus_write_unlock:
+	cpus_write_unlock();
+	pause_restore_prio(prev_prio);
+err_cpu_maps_update:
+	cpu_maps_update_done();
+
+	trace_cpuhp_pause(cpus, start_time, 1);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(pause_cpus);
+
+int resume_cpus(struct cpumask *cpus)
+{
+	unsigned int cpu;
+	int err = 0;
+	u64 start_time = 0;
+	int prev_prio;
+
+	start_time = sched_clock();
+
+	cpu_maps_update_begin();
+
+	if (cpu_hotplug_disabled) {
+		err = -EBUSY;
+		goto err_cpu_maps_update;
+	}
+
+	/* Resuming an already active CPU isn't an error */
+	cpumask_andnot(cpus, cpus, cpu_active_mask);
+
+	for_each_cpu(cpu, cpus) {
+		if (!cpu_online(cpu)) {
+			err = -EBUSY;
+			goto err_cpu_maps_update;
+		}
+	}
+
+	if (cpumask_empty(cpus))
+		goto err_cpu_maps_update;
+
+	for_each_cpu(cpu, cpus)
+		set_cpu_active(cpu, true);
+
+	trace_android_rvh_resume_cpus(cpus, &err);
+	if (err)
+		goto err_cpu_maps_update;
+
+	prev_prio = pause_reduce_prio();
+
+	/* Lazy Resume.  Build domains immediately instead of scheduling
+	 * a workqueue.  This is so that the cpu can pull load when
+	 * sent a load balancing kick.
+	 */
+	cpuset_hotplug_workfn(NULL);
+
+	cpus_write_lock();
+
+	cpuhp_tasks_frozen = 0;
+
+	if (sched_cpus_activate(cpus)) {
+		err = -EBUSY;
+		goto err_cpus_write_unlock;
+	}
+
+	/*
+	 * see pause_cpus.
+	 */
+	for_each_cpu(cpu, cpus) {
+		struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
+
+		st->state = CPUHP_ONLINE;
+		st->target = st->state;
+	}
+
+err_cpus_write_unlock:
+	cpus_write_unlock();
+	pause_restore_prio(prev_prio);
+err_cpu_maps_update:
+	cpu_maps_update_done();
+
+	trace_cpuhp_pause(cpus, start_time, 0);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(resume_cpus);
 
 void smp_shutdown_nonboot_cpus(unsigned int primary_cpu)
 {
@@ -1343,6 +1594,8 @@ static int cpu_up(unsigned int cpu, enum cpuhp_state target)
 		return -EINVAL;
 	}
 
+	trace_android_vh_cpu_up(NULL);
+
 	/*
 	 * CPU hotplug operations consists of many steps and each step
 	 * calls a callback of core kernel subsystem. CPU hotplug-in
@@ -1467,7 +1720,7 @@ int freeze_secondary_cpus(int primary)
 	 */
 	cpumask_clear(frozen_cpus);
 
-	pr_debug("Disabling non-boot CPUs ...\n");
+	pr_info("Disabling non-boot CPUs ...\n");
 	for_each_online_cpu(cpu) {
 		if (cpu == primary)
 			continue;
@@ -1524,7 +1777,7 @@ void thaw_secondary_cpus(void)
 	if (cpumask_empty(frozen_cpus))
 		goto out;
 
-	pr_debug("Enabling non-boot CPUs ...\n");
+	pr_info("Enabling non-boot CPUs ...\n");
 
 	arch_thaw_secondary_cpus_begin();
 
@@ -1533,10 +1786,10 @@ void thaw_secondary_cpus(void)
 		error = _cpu_up(cpu, 1, CPUHP_ONLINE);
 		trace_suspend_resume(TPS("CPU_ON"), cpu, false);
 		if (!error) {
-			pr_debug("CPU%d is up\n", cpu);
+			pr_info("CPU%d is up\n", cpu);
 			cpu_device = get_cpu_device(cpu);
 			if (!cpu_device)
-				pr_debug("%s: failed to get cpu%d device\n",
+				pr_err("%s: failed to get cpu%d device\n",
 				       __func__, cpu);
 			else
 				kobject_uevent(&cpu_device->kobj, KOBJ_ONLINE);
@@ -1737,7 +1990,7 @@ static struct cpuhp_step cpuhp_hp_states[] = {
 		.name			= "ap:online",
 	},
 	/*
-	 * Handled on control processor until the plugged processor manages
+	 * Handled on controll processor until the plugged processor manages
 	 * this itself.
 	 */
 	[CPUHP_TEARDOWN_CPU] = {
@@ -1746,13 +1999,6 @@ static struct cpuhp_step cpuhp_hp_states[] = {
 		.teardown.single	= takedown_cpu,
 		.cant_stop		= true,
 	},
-
-	[CPUHP_AP_SCHED_WAIT_EMPTY] = {
-		.name			= "sched:waitempty",
-		.startup.single		= NULL,
-		.teardown.single	= sched_cpu_wait_empty,
-	},
-
 	/* Handle smpboot threads park/unpark */
 	[CPUHP_AP_SMPBOOT_THREADS] = {
 		.name			= "smpboot/threads:online",

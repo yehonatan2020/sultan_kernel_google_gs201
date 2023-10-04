@@ -20,7 +20,6 @@
 #include <linux/sched/clock.h>
 #include <linux/sched/stat.h>
 #include <linux/sched/nohz.h>
-#include <linux/sched/loadavg.h>
 #include <linux/module.h>
 #include <linux/irq_work.h>
 #include <linux/posix-timers.h>
@@ -56,42 +55,36 @@ static ktime_t last_jiffies_update;
 static void tick_do_update_jiffies64(ktime_t now)
 {
 	unsigned long ticks = 1;
-	ktime_t delta, nextp;
+	ktime_t delta;
 
 	/*
-	 * 64bit can do a quick check without holding jiffies lock and
-	 * without looking at the sequence count. The smp_load_acquire()
+	 * Do a quick check without holding jiffies_lock. The READ_ONCE()
 	 * pairs with the update done later in this function.
 	 *
-	 * 32bit cannot do that because the store of tick_next_period
-	 * consists of two 32bit stores and the first store could move it
-	 * to a random point in the future.
+	 * This is also an intentional data race which is even safe on
+	 * 32bit in theory. If there is a concurrent update then the check
+	 * might give a random answer. It does not matter because if it
+	 * returns then the concurrent update is already taking care, if it
+	 * falls through then it will pointlessly contend on jiffies_lock.
+	 *
+	 * Though there is one nasty case on 32bit due to store tearing of
+	 * the 64bit value. If the first 32bit store makes the quick check
+	 * return on all other CPUs and the writing CPU context gets
+	 * delayed to complete the second store (scheduled out on virt)
+	 * then jiffies can become stale for up to ~2^32 nanoseconds
+	 * without noticing. After that point all CPUs will wait for
+	 * jiffies lock.
+	 *
+	 * OTOH, this is not any different than the situation with NOHZ=off
+	 * where one CPU is responsible for updating jiffies and
+	 * timekeeping. If that CPU goes out for lunch then all other CPUs
+	 * will operate on stale jiffies until it decides to come back.
 	 */
-	if (IS_ENABLED(CONFIG_64BIT)) {
-		if (ktime_before(now, smp_load_acquire(&tick_next_period)))
-			return;
-	} else {
-		unsigned int seq;
+	if (ktime_before(now, READ_ONCE(tick_next_period)))
+		return;
 
-		/*
-		 * Avoid contention on jiffies_lock and protect the quick
-		 * check with the sequence count.
-		 */
-		do {
-			seq = read_seqcount_begin(&jiffies_seq);
-			nextp = tick_next_period;
-		} while (read_seqcount_retry(&jiffies_seq, seq));
-
-		if (ktime_before(now, nextp))
-			return;
-	}
-
-	/* Quick check failed, i.e. update is required. */
+	/* Reevaluate with jiffies_lock held */
 	raw_spin_lock(&jiffies_lock);
-	/*
-	 * Reevaluate with the lock held. Another CPU might have done the
-	 * update already.
-	 */
 	if (ktime_before(now, tick_next_period)) {
 		raw_spin_unlock(&jiffies_lock);
 		return;
@@ -113,39 +106,16 @@ static void tick_do_update_jiffies64(ktime_t now)
 						   TICK_NSEC);
 	}
 
-	/* Advance jiffies to complete the jiffies_seq protected job */
-	jiffies_64 += ticks;
+	do_timer(ticks);
 
 	/*
-	 * Keep the tick_next_period variable up to date.
+	 * Keep the tick_next_period variable up to date.  WRITE_ONCE()
+	 * pairs with the READ_ONCE() in the lockless quick check above.
 	 */
-	nextp = ktime_add_ns(last_jiffies_update, TICK_NSEC);
+	WRITE_ONCE(tick_next_period,
+		   ktime_add_ns(last_jiffies_update, TICK_NSEC));
 
-	if (IS_ENABLED(CONFIG_64BIT)) {
-		/*
-		 * Pairs with smp_load_acquire() in the lockless quick
-		 * check above and ensures that the update to jiffies_64 is
-		 * not reordered vs. the store to tick_next_period, neither
-		 * by the compiler nor by the CPU.
-		 */
-		smp_store_release(&tick_next_period, nextp);
-	} else {
-		/*
-		 * A plain store is good enough on 32bit as the quick check
-		 * above is protected by the sequence count.
-		 */
-		tick_next_period = nextp;
-	}
-
-	/*
-	 * Release the sequence count. calc_global_load() below is not
-	 * protected by it, but jiffies_lock needs to be held to prevent
-	 * concurrent invocations.
-	 */
 	write_seqcount_end(&jiffies_seq);
-
-	calc_global_load();
-
 	raw_spin_unlock(&jiffies_lock);
 	update_wall_time();
 }
@@ -483,10 +453,13 @@ void tick_nohz_dep_clear_signal(struct signal_struct *sig, enum tick_dep_bits bi
  */
 void __tick_nohz_task_switch(void)
 {
+	unsigned long flags;
 	struct tick_sched *ts;
 
+	local_irq_save(flags);
+
 	if (!tick_nohz_full_cpu(smp_processor_id()))
-		return;
+		goto out;
 
 	ts = this_cpu_ptr(&tick_cpu_sched);
 
@@ -495,6 +468,8 @@ void __tick_nohz_task_switch(void)
 		    atomic_read(&current->signal->tick_dep_mask))
 			tick_nohz_full_kick();
 	}
+out:
+	local_irq_restore(flags);
 }
 
 /* Get the boot-time nohz CPU list from the kernel parameters. */
@@ -762,7 +737,7 @@ static void tick_nohz_restart(struct tick_sched *ts, ktime_t now)
 
 static inline bool local_timer_softirq_pending(void)
 {
-	return local_pending_timers() & BIT(TIMER_SOFTIRQ);
+	return local_softirq_pending() & BIT(TIMER_SOFTIRQ);
 }
 
 static ktime_t tick_nohz_next_event(struct tick_sched *ts, int cpu)
@@ -981,45 +956,6 @@ static void tick_nohz_full_update_tick(struct tick_sched *ts)
 #endif
 }
 
-/*
- * A pending softirq outside an IRQ (or softirq disabled section) context
- * should be waiting for ksoftirqd to handle it. Therefore we shouldn't
- * reach here due to the need_resched() early check in can_stop_idle_tick().
- *
- * However if we are between CPUHP_AP_SMPBOOT_THREADS and CPU_TEARDOWN_CPU on the
- * cpu_down() process, softirqs can still be raised while ksoftirqd is parked,
- * triggering the below since wakep_softirqd() is ignored.
- *
- */
-static bool report_idle_softirq(void)
-{
-	static int ratelimit;
-	unsigned int pending = local_softirq_pending();
-
-	if (likely(!pending))
-		return false;
-
-	/* Some softirqs claim to be safe against hotplug and ksoftirqd parking */
-	if (!cpu_active(smp_processor_id())) {
-		pending &= ~SOFTIRQ_HOTPLUG_SAFE_MASK;
-		if (!pending)
-			return false;
-	}
-
-	if (ratelimit < 10)
-		return false;
-
-	/* On RT, softirqs handling may be waiting on some lock */
-	if (!local_bh_blocked())
-		return false;
-
-	pr_warn("NOHZ tick-stop error: local softirq work is pending, handler #%02x!!!\n",
-		pending);
-	ratelimit++;
-
-	return true;
-}
-
 static bool can_stop_idle_tick(int cpu, struct tick_sched *ts)
 {
 	/*
@@ -1046,8 +982,17 @@ static bool can_stop_idle_tick(int cpu, struct tick_sched *ts)
 	if (need_resched())
 		return false;
 
-	if (unlikely(report_idle_softirq()))
+	if (unlikely(local_softirq_pending())) {
+		static int ratelimit;
+
+		if (ratelimit < 10 &&
+		    (local_softirq_pending() & SOFTIRQ_STOP_IDLE_MASK)) {
+			pr_warn("NOHZ tick-stop error: Non-RCU local softirq work is pending, handler #%02x!!!\n",
+				(unsigned int) local_softirq_pending());
+			ratelimit++;
+		}
 		return false;
+	}
 
 	if (tick_nohz_full_enabled()) {
 		/*

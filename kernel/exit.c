@@ -805,7 +805,7 @@ void __noreturn do_exit(long code)
 	 * Then do everything else.
 	 */
 
-	WARN_ON(tsk->plug);
+	WARN_ON(blk_needs_flush_plug(tsk));
 
 	if (unlikely(in_interrupt()))
 		panic("Aiee, killing interrupt handler!");
