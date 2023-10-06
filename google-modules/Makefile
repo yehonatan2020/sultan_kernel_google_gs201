@@ -7,6 +7,7 @@
 # with `-I$(KERNEL_SRC)/../google-modules/SOME_MODULE`, inclusion works as-is.
 export KERNEL_SRC := $(srctree)/google-modules
 
+obj-y += amplifiers/audiometrics/
 obj-y += amplifiers/cs35l41/
 obj-y += amplifiers/cs35l45/
 obj-y += amplifiers/cs40l26/
@@ -19,6 +20,7 @@ obj-y += bluetooth/qcom/
 obj-y += bms/
 obj-y += display/samsung/
 obj-y += edgetpu/janeiro/drivers/edgetpu/
+obj-y += edgetpu/abrolhos/drivers/edgetpu/
 obj-y += gpu/mali_kbase/
 obj-y += gpu/mali_pixel/
 obj-y += gxp/gs201/
@@ -26,8 +28,10 @@ obj-y += lwis/
 obj-y += nfc/
 obj-y += power/reset/
 obj-y += touch/common/
+obj-y += touch/fts/ftm5/
 obj-y += touch/focaltech/ft3658/
 obj-y += touch/goodix/
+obj-y += touch/sec/
 obj-y += touch/synaptics/
 obj-y += uwb/kernel/
 obj-y += video/gchips/
