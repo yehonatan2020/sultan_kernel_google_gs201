@@ -28,7 +28,6 @@
 
 	controller-data {
 		samsung,spi-feedback-delay = <0>;
-		samsung,spi-chip-select-mode = <1>;
-		cs-clock-delay = <1>;
+		samsung,spi-chip-select-mode = <0>;
 	};
 };

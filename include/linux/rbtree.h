@@ -17,14 +17,14 @@
 #ifndef	_LINUX_RBTREE_H
 #define	_LINUX_RBTREE_H
 
-#include <linux/rbtree_types.h>
-
 #include <linux/kernel.h>
 #include <linux/stddef.h>
+#include <linux/rbtree_type.h>
 #include <linux/rcupdate.h>
 
 #define rb_parent(r)   ((struct rb_node *)((r)->__rb_parent_color & ~3))
 
+#define RB_ROOT	(struct rb_root) { NULL, }
 #define	rb_entry(ptr, type, member) container_of(ptr, type, member)
 
 #define RB_EMPTY_ROOT(root)  (READ_ONCE((root)->rb_node) == NULL)
@@ -102,6 +102,8 @@ static inline void rb_link_node_rcu(struct rb_node *node, struct rb_node *parent
 			typeof(*pos), field); 1; }); \
 	     pos = n)
 
+#define RB_ROOT_CACHED (struct rb_root_cached) { {NULL, }, NULL }
+
 /* Same as rb_first(), but O(1) */
 #define rb_first_cached(root) (root)->rb_leftmost
 
@@ -114,18 +116,12 @@ static inline void rb_insert_color_cached(struct rb_node *node,
 	rb_insert_color(node, &root->rb_root);
 }
 
-
-static inline struct rb_node *
-rb_erase_cached(struct rb_node *node, struct rb_root_cached *root)
+static inline void rb_erase_cached(struct rb_node *node,
+				   struct rb_root_cached *root)
 {
-	struct rb_node *leftmost = NULL;
-
 	if (root->rb_leftmost == node)
-		leftmost = root->rb_leftmost = rb_next(node);
-
+		root->rb_leftmost = rb_next(node);
 	rb_erase(node, &root->rb_root);
-
-	return leftmost;
 }
 
 static inline void rb_replace_node_cached(struct rb_node *victim,
@@ -158,10 +154,8 @@ static inline void rb_replace_node_cached(struct rb_node *victim,
  * @node: node to insert
  * @tree: leftmost cached tree to insert @node into
  * @less: operator defining the (partial) node order
- *
- * Returns @node when it is the new leftmost, or NULL.
  */
-static __always_inline struct rb_node *
+static __always_inline void
 rb_add_cached(struct rb_node *node, struct rb_root_cached *tree,
 	      bool (*less)(struct rb_node *, const struct rb_node *))
 {
@@ -181,8 +175,6 @@ rb_add_cached(struct rb_node *node, struct rb_root_cached *tree,
 
 	rb_link_node(node, parent, link);
 	rb_insert_color_cached(node, tree, leftmost);
-
-	return leftmost ? node : NULL;
 }
 
 /**

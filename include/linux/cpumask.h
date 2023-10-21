@@ -201,6 +201,11 @@ static inline int cpumask_any_and_distribute(const struct cpumask *src1p,
 	return cpumask_next_and(-1, src1p, src2p);
 }
 
+static inline int cpumask_any_distribute(const struct cpumask *srcp)
+{
+	return cpumask_first(srcp);
+}
+
 #define for_each_cpu(cpu, mask)			\
 	for ((cpu) = 0; (cpu) < 1; (cpu)++, (void)mask)
 #define for_each_cpu_not(cpu, mask)		\
@@ -321,7 +326,7 @@ static inline unsigned int cpumask_last(const struct cpumask *srcp)
 	return find_last_bit(cpumask_bits(srcp), nr_cpumask_bits);
 }
 
-unsigned int __pure cpumask_next(int n, const struct cpumask *srcp);
+unsigned int cpumask_next(int n, const struct cpumask *srcp);
 
 /**
  * cpumask_next_zero - get the next unset cpu in a cpumask
@@ -338,13 +343,14 @@ static inline unsigned int cpumask_next_zero(int n, const struct cpumask *srcp)
 	return find_next_zero_bit(cpumask_bits(srcp), nr_cpumask_bits, n+1);
 }
 
-int __pure cpumask_next_and(int n, const struct cpumask *, const struct cpumask *);
-int __pure cpumask_any_but(const struct cpumask *mask, unsigned int cpu);
+int cpumask_next_and(int n, const struct cpumask *, const struct cpumask *);
+int cpumask_any_but(const struct cpumask *mask, unsigned int cpu);
 #endif /* NR_CPUS <= BITS_PER_LONG */
 
 unsigned int cpumask_local_spread(unsigned int i, int node);
 int cpumask_any_and_distribute(const struct cpumask *src1p,
 			       const struct cpumask *src2p);
+int cpumask_any_distribute(const struct cpumask *srcp);
 
 /**
  * for_each_cpu - iterate over every cpu in a mask
@@ -1028,44 +1034,6 @@ cpumap_print_to_pagebuf(bool list, char *buf, const struct cpumask *mask)
 {
 	return bitmap_print_to_pagebuf(list, buf, cpumask_bits(mask),
 				      nr_cpu_ids);
-}
-
-/**
- * cpumap_print_bitmask_to_buf  - copies the cpumask into the buffer as
- *	hex values of cpumask
- *
- * @buf: the buffer to copy into
- * @mask: the cpumask to copy
- * @off: in the string from which we are copying, we copy to @buf
- * @count: the maximum number of bytes to print
- *
- * The function prints the cpumask into the buffer as hex values of
- * cpumask; Typically used by bin_attribute to export cpumask bitmask
- * ABI.
- *
- * Returns the length of how many bytes have been copied.
- */
-static inline ssize_t
-cpumap_print_bitmask_to_buf(char *buf, const struct cpumask *mask,
-		loff_t off, size_t count)
-{
-	return bitmap_print_bitmask_to_buf(buf, cpumask_bits(mask),
-				   nr_cpu_ids, off, count);
-}
-
-/**
- * cpumap_print_list_to_buf  - copies the cpumask into the buffer as
- *	comma-separated list of cpus
- *
- * Everything is same with the above cpumap_print_bitmask_to_buf()
- * except the print format.
- */
-static inline ssize_t
-cpumap_print_list_to_buf(char *buf, const struct cpumask *mask,
-		loff_t off, size_t count)
-{
-	return bitmap_print_list_to_buf(buf, cpumask_bits(mask),
-				   nr_cpu_ids, off, count);
 }
 
 #if NR_CPUS <= BITS_PER_LONG

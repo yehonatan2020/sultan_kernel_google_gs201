@@ -427,8 +427,26 @@ void note_interrupt(struct irq_desc *desc, irqreturn_t action_ret)
 	desc->irqs_unhandled = 0;
 }
 
+bool noirqdebug __read_mostly;
+
+int noirqdebug_setup(char *str)
+{
+	noirqdebug = 1;
+	printk(KERN_INFO "IRQ lockup detection disabled\n");
+
+	return 1;
+}
+
+__setup("noirqdebug", noirqdebug_setup);
+module_param(noirqdebug, bool, 0644);
+MODULE_PARM_DESC(noirqdebug, "Disable irq lockup detection when true");
+
 static int __init irqfixup_setup(char *str)
 {
+#ifdef CONFIG_PREEMPT_RT
+	pr_warn("irqfixup boot option not supported w/ CONFIG_PREEMPT_RT\n");
+	return 1;
+#endif
 	irqfixup = 1;
 	printk(KERN_WARNING "Misrouted IRQ fixup support enabled.\n");
 	printk(KERN_WARNING "This may impact system performance.\n");
@@ -441,6 +459,10 @@ module_param(irqfixup, int, 0644);
 
 static int __init irqpoll_setup(char *str)
 {
+#ifdef CONFIG_PREEMPT_RT
+	pr_warn("irqpoll boot option not supported w/ CONFIG_PREEMPT_RT\n");
+	return 1;
+#endif
 	irqfixup = 2;
 	printk(KERN_WARNING "Misrouted IRQ fixup and polling support "
 				"enabled\n");

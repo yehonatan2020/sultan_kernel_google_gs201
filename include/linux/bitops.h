@@ -3,19 +3,6 @@
 #define _LINUX_BITOPS_H
 #include <asm/types.h>
 #include <linux/bits.h>
-#include <linux/typecheck.h>
-
-#ifndef arch_try_cmpxchg
-#define arch_try_cmpxchg(_ptr, _oldp, _new) \
-({ \
-	typeof(*(_ptr)) *___op = (_oldp), ___o = *___op, ___r; \
-	___r = arch_cmpxchg((_ptr), ___o, (_new)); \
-	if (unlikely(___r != ___o)) \
-		*___op = ___r; \
-	likely(___r == ___o); \
-})
-#define try_cmpxchg arch_try_cmpxchg
-#endif /* arch_try_cmpxchg */
 
 /* Set bits in the first 'n' bytes when loaded from memory */
 #ifdef __LITTLE_ENDIAN
@@ -224,7 +211,7 @@ static inline int get_count_order_long(unsigned long l)
  * __ffs64 - find first set bit in a 64 bit word
  * @word: The 64 bit word
  *
- * On 64 bit arches this is a synonym for __ffs
+ * On 64 bit arches this is a synomyn for __ffs
  * The result is not defined if no bits are set, so check that @word
  * is non-zero before calling this.
  */
@@ -263,55 +250,6 @@ static __always_inline void __assign_bit(long nr, volatile unsigned long *addr,
 		__clear_bit(nr, addr);
 }
 
-/**
- * __ptr_set_bit - Set bit in a pointer's value
- * @nr: the bit to set
- * @addr: the address of the pointer variable
- *
- * Example:
- *	void *p = foo();
- *	__ptr_set_bit(bit, &p);
- */
-#define __ptr_set_bit(nr, addr)                         \
-	({                                              \
-		typecheck_pointer(*(addr));             \
-		__set_bit(nr, (unsigned long *)(addr)); \
-	})
-
-/**
- * __ptr_clear_bit - Clear bit in a pointer's value
- * @nr: the bit to clear
- * @addr: the address of the pointer variable
- *
- * Example:
- *	void *p = foo();
- *	__ptr_clear_bit(bit, &p);
- */
-#define __ptr_clear_bit(nr, addr)                         \
-	({                                                \
-		typecheck_pointer(*(addr));               \
-		__clear_bit(nr, (unsigned long *)(addr)); \
-	})
-
-/**
- * __ptr_test_bit - Test bit in a pointer's value
- * @nr: the bit to test
- * @addr: the address of the pointer variable
- *
- * Example:
- *	void *p = foo();
- *	if (__ptr_test_bit(bit, &p)) {
- *	        ...
- *	} else {
- *		...
- *	}
- */
-#define __ptr_test_bit(nr, addr)                       \
-	({                                             \
-		typecheck_pointer(*(addr));            \
-		test_bit(nr, (unsigned long *)(addr)); \
-	})
-
 #ifdef __KERNEL__
 
 #ifndef set_mask_bits
@@ -343,6 +281,18 @@ static __always_inline void __assign_bit(long nr, volatile unsigned long *addr,
 								\
 	!(old__ & test__);					\
 })
+#endif
+
+#ifndef find_last_bit
+/**
+ * find_last_bit - find the last set bit in a memory region
+ * @addr: The address to start the search at
+ * @size: The number of bits to search
+ *
+ * Returns the bit number of the last set bit, or size.
+ */
+extern unsigned long find_last_bit(const unsigned long *addr,
+				   unsigned long size);
 #endif
 
 #endif /* __KERNEL__ */

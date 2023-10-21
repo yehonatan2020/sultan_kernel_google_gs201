@@ -3066,7 +3066,6 @@ static noinline int audit_inode_permission(struct inode *inode,
 					   u32 perms, u32 audited, u32 denied,
 					   int result)
 {
-#ifdef CONFIG_AUDIT
 	struct common_audit_data ad;
 	struct inode_security_struct *isec = selinux_inode(inode);
 	int rc;
@@ -3079,7 +3078,6 @@ static noinline int audit_inode_permission(struct inode *inode,
 			    audited, denied, result, &ad);
 	if (rc)
 		return rc;
-#endif
 	return 0;
 }
 
@@ -3400,7 +3398,6 @@ static int selinux_inode_getsecurity(struct inode *inode, const char *name, void
 {
 	u32 size;
 	int error;
-	char buf[SELINUX_LABEL_LENGTH];
 	char *context = NULL;
 	struct inode_security_struct *isec;
 
@@ -3422,33 +3419,22 @@ static int selinux_inode_getsecurity(struct inode *inode, const char *name, void
 	 * in-core context value, not a denial.
 	 */
 	isec = inode_security(inode);
-	if (!alloc)
-		context = buf;
-	if (has_cap_mac_admin(false)) {
-		if (alloc) {
-			error = security_sid_to_context_force(&selinux_state,
-							      isec->sid, &context,
-							      &size);
-		} else {
-			error = security_sid_to_context_force_stack(&selinux_state,
-							      isec->sid, &context,
-							      &size);
-		}
-	} else {
-		if (alloc) {
-			error = security_sid_to_context(&selinux_state, isec->sid,
-							&context, &size);
-		} else {
-			error = security_sid_to_context_stack(&selinux_state, isec->sid,
-							&context, &size);
-		}
-	}
+	if (has_cap_mac_admin(false))
+		error = security_sid_to_context_force(&selinux_state,
+						      isec->sid, &context,
+						      &size);
+	else
+		error = security_sid_to_context(&selinux_state, isec->sid,
+						&context, &size);
 	if (error)
 		return error;
 	error = size;
-	if (alloc)
+	if (alloc) {
 		*buffer = context;
-
+		goto out_nofree;
+	}
+	kfree(context);
+out_nofree:
 	return error;
 }
 
@@ -5150,8 +5136,7 @@ static int selinux_socket_getpeersec_stream(struct socket *sock, char __user *op
 					    int __user *optlen, unsigned len)
 {
 	int err = 0;
-	char buf[SELINUX_LABEL_LENGTH];
-	char *scontext = buf;
+	char *scontext;
 	u32 scontext_len;
 	struct sk_security_struct *sksec = sock->sk->sk_security;
 	u32 peer_sid = SECSID_NULL;
@@ -5163,7 +5148,7 @@ static int selinux_socket_getpeersec_stream(struct socket *sock, char __user *op
 	if (peer_sid == SECSID_NULL)
 		return -ENOPROTOOPT;
 
-	err = security_sid_to_context_stack(&selinux_state, peer_sid, &scontext,
+	err = security_sid_to_context(&selinux_state, peer_sid, &scontext,
 				      &scontext_len);
 	if (err)
 		return err;
@@ -5179,7 +5164,7 @@ static int selinux_socket_getpeersec_stream(struct socket *sock, char __user *op
 out_len:
 	if (put_user(scontext_len, optlen))
 		err = -EFAULT;
-
+	kfree(scontext);
 	return err;
 }
 
@@ -5213,15 +5198,17 @@ out:
 
 static int selinux_sk_alloc_security(struct sock *sk, int family, gfp_t priority)
 {
-	struct sk_security_struct *sksec = sk->sk_security;
+	struct sk_security_struct *sksec;
 
-#ifdef CONFIG_NETLABEL
-	memset(sksec, 0, offsetof(struct sk_security_struct, sid));
-#endif
+	sksec = kzalloc(sizeof(*sksec), priority);
+	if (!sksec)
+		return -ENOMEM;
+
 	sksec->peer_sid = SECINITSID_UNLABELED;
 	sksec->sid = SECINITSID_UNLABELED;
 	sksec->sclass = SECCLASS_SOCKET;
 	selinux_netlbl_sk_security_reset(sksec);
+	sk->sk_security = sksec;
 
 	return 0;
 }
@@ -5230,12 +5217,14 @@ static void selinux_sk_free_security(struct sock *sk)
 {
 	struct sk_security_struct *sksec = sk->sk_security;
 
+	sk->sk_security = NULL;
 	selinux_netlbl_sk_security_free(sksec);
+	kfree(sksec);
 }
 
 static void selinux_sk_clone_security(const struct sock *sk, struct sock *newsk)
 {
-	const struct sk_security_struct *sksec = sk->sk_security;
+	struct sk_security_struct *sksec = sk->sk_security;
 	struct sk_security_struct *newsksec = newsk->sk_security;
 
 	newsksec->sid = sksec->sid;
