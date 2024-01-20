@@ -4,7 +4,7 @@
 ### AnyKernel setup
 # begin properties
 properties() { '
-kernel.string=SultanStarlite Kernel for the Pixel 7/Pro and 7a
+kernel.string=Sultan-Starlite Kernel for the Pixel 7/Pro and 7a
 do.devicecheck=1
 do.modules=0
 do.systemless=1
@@ -13,8 +13,8 @@ do.cleanuponabort=0
 device.name1=cheetah
 device.name2=panther
 device.name3=lynx
-supported.versions=13
-supported.patchlevels=2023-06 -
+supported.versions=14
+supported.patchlevels=2024-01 -
 '; } # end properties
 
 # boot image installation
