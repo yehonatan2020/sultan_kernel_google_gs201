@@ -3314,18 +3314,6 @@ static void kfree_rcu_work(struct work_struct *work)
 }
 
 static bool
-need_offload_krc(struct kfree_rcu_cpu *krcp)
-{
-	int i;
-
-	for (i = 0; i < FREE_N_CHANNELS; i++)
-		if (krcp->bkvhead[i])
-			return true;
-
-	return !!krcp->head;
-}
-
-static bool
 need_wait_for_krwp_work(struct kfree_rcu_cpu_work *krwp)
 {
 	int i;
